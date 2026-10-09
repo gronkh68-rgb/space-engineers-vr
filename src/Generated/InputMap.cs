@@ -56,11 +56,11 @@ namespace SeVr.Generated {
     new ControlRow("C_COLOR","color_menu","COLOR_PICKER","pulse","foot"),
     new ControlRow("C_MENU","menu","MAIN_MENU","pulse","both"),
     new ControlRow("C_VIEW","view","MAIN_MENU","pulse","both"),
-    new ControlRow("C_FX","fx","TERMINAL","pulse","both"),
+    new ControlRow("C_FX","fx","KEY:G","pulse","both"),
     new ControlRow("C_FY","fy","INVENTORY","pulse","both"),
     new ControlRow("C_DPAD_DOWN","dpad_down","KEY:Z","pulse","both"),
     new ControlRow("C_DPAD_UP","dpad_up","KEY:F","pulse","both"),
     new ControlRow("C_DPAD_RIGHT","dpad_right","KEY:L","pulse","both"),
-    new ControlRow("C_DPAD_LEFT","dpad_left","KEY:G","pulse","both"),
+    new ControlRow("C_DPAD_LEFT","dpad_left","KEY:J","pulse","both"),
   }; }
 }

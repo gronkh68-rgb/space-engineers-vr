@@ -29,11 +29,12 @@
     {"id":"C_COLOR","source":"color_menu","gameControl":"COLOR_PICKER","mode":"pulse","context":"foot","note":"building with the left grip held: Y = colour menu"},
     {"id":"C_MENU","source":"menu","gameControl":"MAIN_MENU","mode":"pulse","context":"both","note":"Touch: menu button: game menu"},
     {"id":"C_VIEW","source":"view","gameControl":"MAIN_MENU","mode":"pulse","context":"both","note":"Frame: view button: game menu"},
-    {"id":"C_FX","source":"fx","gameControl":"TERMINAL","mode":"pulse","context":"both","note":"Frame: X: terminal"},
+    {"id":"C_FX","source":"fx","gameControl":"KEY:G","mode":"pulse","context":"both","note":"Frame: X (left button, right controller): key G"},
     {"id":"C_FY","source":"fy","gameControl":"INVENTORY","mode":"pulse","context":"both","note":"Frame: Y: inventory"},
     {"id":"C_DPAD_DOWN","source":"dpad_down","gameControl":"KEY:Z","mode":"pulse","context":"both","note":"D-pad down: key Z"},
     {"id":"C_DPAD_UP","source":"dpad_up","gameControl":"KEY:F","mode":"pulse","context":"both","note":"D-pad up: key F"},
     {"id":"C_DPAD_RIGHT","source":"dpad_right","gameControl":"KEY:L","mode":"pulse","context":"both","note":"D-pad right: key L"},
-    {"id":"C_DPAD_LEFT","source":"dpad_left","gameControl":"KEY:G","mode":"pulse","context":"both","note":"D-pad left: key G"}
+    {"id":"C_DPAD_LEFT","source":"dpad_left","gameControl":"KEY:J","mode":"pulse","context":"both","note":"D-pad left: key J (helmet)"}
   ]
 }
+
