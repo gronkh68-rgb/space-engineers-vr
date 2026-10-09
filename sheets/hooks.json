@@ -1,0 +1,15 @@
+{
+  "_doc": "One row per Harmony hook into Space Engineers. type/method are verified against the installed game DLLs by tools/preflight.ps1. feature must resolve in features.json.",
+  "columns": ["id","assembly","type","method","kind","feature","purpose","verified"],
+  "rows": [
+    {"id":"H_CREATE_DEVICE","assembly":"VRage.Render11","type":"VRageRender.MyRender11","method":"CreateDevice","kind":"prefix","feature":"F_STEREO_VIEW","purpose":"If the render device is recreated while VR is on, keep the per-eye backbuffer size","verified":true},
+    {"id":"H_APPLY_SETTINGS","assembly":"VRage.Render11","type":"VRageRender.MyRender11","method":"ApplySettings","kind":"postfix","feature":"F_STEREO_VIEW","purpose":"Log the backbuffer size the engine actually applied","verified":true},
+    {"id":"H_SET_CAMERA","assembly":"VRage.Render11","type":"VRageRender.MyRender11","method":"SetupCameraMatrices","kind":"postfix","feature":"F_STEREO_VIEW","purpose":"Remember the game camera, then overwrite the main environment matrices with the current eye's OpenXR pose and asymmetric FOV","verified":true},
+    {"id":"H_DRAW","assembly":"VRage.Render11","type":"VRageRender.MyRender11","method":"Draw","kind":"prefix+postfix","feature":"F_STEREO_VIEW","purpose":"Prefix: xrWaitFrame/BeginFrame/LocateViews/SyncActions, left eye pass. Postfix: copy left eye, draw the frame again for the right eye, copy it","verified":true},
+    {"id":"H_CONSUME_SPRITES","assembly":"VRage.Render11","type":"VRageRender.MyRender11","method":"ConsumeMainSprites","kind":"prefix","feature":"F_STEREO_VIEW","purpose":"Replay the recorded HUD/GUI command list in the right eye pass so the HUD is in both eyes","verified":true},
+    {"id":"H_PRESENT","assembly":"VRage.Render11","type":"VRageRender.MyRender11","method":"Present","kind":"prefix","feature":"F_STEREO_VIEW","purpose":"Release the swapchain image and xrEndFrame (projection layer, or a floating quad while a menu is open)","verified":true},
+    {"id":"H_JOY_AXIS","assembly":"VRage.Input","type":"VRage.Input.MyVRageInput","method":"IsJoystickAxisSupported","kind":"postfix","feature":"F_COCKPIT_FLIGHT","purpose":"Report every gamepad axis as present while VR is active","verified":true},
+    {"id":"H_JOY_CONNECTED","assembly":"VRage.Input","type":"VRage.Input.MyVRageInput","method":"SetConnectedJoystick","kind":"prefix","feature":"F_COCKPIT_FLIGHT","purpose":"Keep the virtual gamepad connected even though DirectInput finds no device","verified":true},
+    {"id":"H_UPDATE_STATES","assembly":"VRage.Input","type":"VRage.Input.MyVRageInput","method":"UpdateStates","kind":"prefix","feature":"F_COCKPIT_FLIGHT","purpose":"Replace the joystick state with the virtual gamepad built from VR controllers","verified":true}
+  ]
+}

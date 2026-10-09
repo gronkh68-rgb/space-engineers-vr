@@ -1,0 +1,28 @@
+{
+  "_doc": "Physical VR controller input -> named VR source (target). path = Oculus Touch layout (also used by Quest, Pico, Index, WMR through translation). framePath = Steam Frame controller (valve/frame_controller_valve): empty means same as path, '-' means not bound there. What each source does in the game is in controls.json.",
+  "columns": ["id","xrAction","type","hand","path","framePath","target","mode"],
+  "rows": [
+    {"id":"I_MOVE","xrAction":"move","type":"vector2","hand":"left","path":"/user/hand/left/input/thumbstick","framePath":"","target":"move","mode":"stick"},
+    {"id":"I_TURN","xrAction":"turn","type":"vector2","hand":"right","path":"/user/hand/right/input/thumbstick","framePath":"","target":"turn","mode":"stick"},
+    {"id":"I_JUMP","xrAction":"jump","type":"bool","hand":"right","path":"/user/hand/right/input/a/click","framePath":"","target":"jump","mode":"button"},
+    {"id":"I_CROUCH","xrAction":"crouch","type":"bool","hand":"right","path":"/user/hand/right/input/b/click","framePath":"","target":"crouch","mode":"button"},
+    {"id":"I_X","xrAction":"x","type":"bool","hand":"left","path":"/user/hand/left/input/x/click","framePath":"-","target":"x","mode":"tap_hold"},
+    {"id":"I_Y","xrAction":"y","type":"bool","hand":"left","path":"/user/hand/left/input/y/click","framePath":"-","target":"y","mode":"tap_hold"},
+    {"id":"I_GRIP_L","xrAction":"grip_l","type":"float","hand":"left","path":"/user/hand/left/input/squeeze/value","framePath":"","target":"grip_l","mode":"trigger"},
+    {"id":"I_GRIP_R","xrAction":"grip_r","type":"float","hand":"right","path":"/user/hand/right/input/squeeze/value","framePath":"","target":"grip_r","mode":"trigger"},
+    {"id":"I_SPRINT","xrAction":"sprint","type":"bool","hand":"left","path":"/user/hand/left/input/thumbstick/click","framePath":"","target":"sprint","mode":"button"},
+    {"id":"I_JETPACK","xrAction":"jetpack","type":"bool","hand":"right","path":"/user/hand/right/input/thumbstick/click","framePath":"","target":"jetpack","mode":"button"},
+    {"id":"I_MENU","xrAction":"menu","type":"bool","hand":"left","path":"/user/hand/left/input/menu/click","framePath":"-","target":"menu","mode":"button"},
+    {"id":"I_TRIGGER_R","xrAction":"trigger_r","type":"float","hand":"right","path":"/user/hand/right/input/trigger/value","framePath":"","target":"trigger_r","mode":"trigger"},
+    {"id":"I_TRIGGER_L","xrAction":"trigger_l","type":"float","hand":"left","path":"/user/hand/left/input/trigger/value","framePath":"","target":"trigger_l","mode":"trigger"},
+    {"id":"I_FX","xrAction":"fx","type":"bool","hand":"right","path":"","framePath":"/user/hand/right/input/x/click","target":"fx","mode":"button"},
+    {"id":"I_FY","xrAction":"fy","type":"bool","hand":"right","path":"","framePath":"/user/hand/right/input/y/click","target":"fy","mode":"button"},
+    {"id":"I_BUMP_L","xrAction":"bump_l","type":"bool","hand":"left","path":"","framePath":"/user/hand/left/input/bumper/click","target":"bump_l","mode":"button"},
+    {"id":"I_BUMP_R","xrAction":"bump_r","type":"bool","hand":"right","path":"","framePath":"/user/hand/right/input/bumper/click","target":"bump_r","mode":"button"},
+    {"id":"I_VIEW","xrAction":"view","type":"bool","hand":"left","path":"","framePath":"/user/hand/left/input/view/click","target":"view","mode":"button"},
+    {"id":"I_DPAD_UP","xrAction":"dpad_up","type":"bool","hand":"left","path":"","framePath":"/user/hand/left/input/dpad_up/click","target":"dpad_up","mode":"button"},
+    {"id":"I_DPAD_DOWN","xrAction":"dpad_down","type":"bool","hand":"left","path":"","framePath":"/user/hand/left/input/dpad_down/click","target":"dpad_down","mode":"button"},
+    {"id":"I_DPAD_LEFT","xrAction":"dpad_left","type":"bool","hand":"left","path":"","framePath":"/user/hand/left/input/dpad_left/click","target":"dpad_left","mode":"button"},
+    {"id":"I_DPAD_RIGHT","xrAction":"dpad_right","type":"bool","hand":"left","path":"","framePath":"/user/hand/left/input/dpad_right/click","target":"dpad_right","mode":"button"}
+  ]
+}

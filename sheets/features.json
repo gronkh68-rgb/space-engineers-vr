@@ -1,0 +1,10 @@
+{
+  "_doc": "The four first-version features. Each row lists the sheet rows that implement it; preflight checks every reference resolves.",
+  "columns": ["id","name","hooks","inputs","status"],
+  "rows": [
+    {"id":"F_STEREO_VIEW","name":"Stereo VR view, head tracked, flat menus on a floating screen","hooks":["H_CREATE_DEVICE","H_APPLY_SETTINGS","H_SET_CAMERA","H_DRAW","H_CONSUME_SPRITES","H_PRESENT"],"inputs":[],"status":"two-eye render verified in game with synthetic eyes; headset not tested"},
+    {"id":"F_COCKPIT_FLIGHT","name":"Cockpit flying and on-foot movement with a virtual gamepad driven by the controllers","hooks":["H_JOY_AXIS","H_JOY_CONNECTED","H_UPDATE_STATES"],"inputs":["I_MOVE","I_LOOK","I_JUMP","I_USE","I_PRIMARY","I_SECONDARY","I_CROUCH","I_RELOAD_SWITCH","I_TOOLBAR_NEXT","I_TOOLBAR_PREV","I_MENU","I_TERMINAL","I_INVENTORY","I_THRUSTERS"],"status":"implemented, not tested with controllers"},
+    {"id":"F_HAND_CONTROLLERS","name":"Hand controllers on foot: tools, building, grabbing","hooks":["H_UPDATE_STATES"],"inputs":["I_MOVE","I_LOOK","I_PRIMARY","I_SECONDARY","I_USE"],"status":"partial: buttons and triggers work through the pad, hand poses are read, aiming still follows the head"},
+    {"id":"F_WRIST_MENU","name":"Wrist menu and toolbar without keyboard or mouse","hooks":["H_PRESENT"],"inputs":["I_TOOLBAR_NEXT","I_TOOLBAR_PREV","I_MENU"],"status":"not built: toolbar next/previous on the grips, menu button opens the game menu"}
+  ]
+}

@@ -1,0 +1,6 @@
+{
+  "_doc": "OpenXR calls the plugin makes. Every function must have a P/Invoke in src/Xr/Native.cs (checked by preflight).",
+  "functions": ["xrCreateInstance","xrDestroyInstance","xrGetSystem","xrGetInstanceProcAddr","xrCreateSession","xrDestroySession","xrBeginSession","xrEndSession","xrPollEvent","xrCreateReferenceSpace","xrDestroySpace","xrEnumerateViewConfigurationViews","xrEnumerateSwapchainFormats","xrCreateSwapchain","xrDestroySwapchain","xrEnumerateSwapchainImages","xrAcquireSwapchainImage","xrWaitSwapchainImage","xrReleaseSwapchainImage","xrWaitFrame","xrBeginFrame","xrEndFrame","xrLocateViews","xrLocateSpace","xrStringToPath","xrCreateActionSet","xrCreateAction","xrSuggestInteractionProfileBindings","xrAttachSessionActionSets","xrCreateActionSpace","xrSyncActions","xrGetActionStateBoolean","xrGetActionStateFloat","xrGetActionStateVector2f"],
+  "extensions": ["XR_KHR_D3D11_enable"],
+  "profiles": ["/interaction_profiles/oculus/touch_controller","/interaction_profiles/khr/simple_controller"]
+}

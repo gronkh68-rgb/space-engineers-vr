@@ -1,0 +1,1 @@
+﻿openxr_loader.dll is the unmodified OpenXR loader from the Khronos Group (https://github.com/KhronosGroup/OpenXR-SDK), Apache-2.0 / MIT licence. Pulsar copies this folder to the player's disk and passes it to the plugin (LoadAssets).
