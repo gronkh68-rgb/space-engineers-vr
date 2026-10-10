@@ -24,6 +24,10 @@ namespace SeVr.Vr
         public static float TurnRateDegPerSec = 150f;
         public static float PitchRateDegPerSec = 90f;
         public static float Gain = 0.35f;          // fraction of the remaining angle corrected per engine tick
+        static bool eyeOffInit, eyeBaseValid;
+        static Vector3 eyeOff;
+        static Vector3D EyeBase;
+        const float EyeSmoothSeconds = 0.15f;
         static bool baseInit, refInit, havePrevRot;
         static Matrix prevRot;
         static Vector3 lastUp = Vector3.Up;
@@ -62,10 +66,31 @@ namespace SeVr.Vr
                 float aH = 1f - (float)Math.Exp(-dt / 1.2f), aV = 1f - (float)Math.Exp(-dt / 12f);
                 HeadRefPos.X += delta.X * aH; HeadRefPos.Z += delta.Z * aH; HeadRefPos.Y += delta.Y * aV;
             }
-            if (ch == null) { OnFoot = false; Inject = Vector2.Zero; baseInit = false; return; }
+            if (ch == null) { OnFoot = false; Inject = Vector2.Zero; baseInit = false; eyeOffInit = false; eyeBaseValid = false; return; }
             OnFoot = true;
 
             MatrixD body = ch.PositionComp.WorldMatrixRef;
+            // A freshly spawned character (new world) can have an invalid orientation for a moment; anything computed from it
+            // would be NaN, and NaN fed into the engine's rotation input ruins the character. Wait until everything is valid.
+            if (!Valid((Vector3)body.Up) || !Valid((Vector3)body.Right) || !Valid((Vector3)body.Forward) || !Valid((Vector3)camWorld.Forward) || !Valid((Vector3)camWorld.Translation)
+                || !Valid(headLocal.Forward) || !Valid(headLocalPos))
+            { OnFoot = false; Inject = Vector2.Zero; baseInit = false; eyeOffInit = false; eyeBaseValid = false; return; }
+            if (baseInit && !ValidM(BaseM)) baseInit = false;
+
+            // The engine's camera sits on the animated head bone, which sways a little (turning, idle, footsteps) and shows up as a slight
+            // tremble. Keep the eye point at the same place relative to the body, low-pass filtered, and use that instead.
+            if (Plugin.Config.EyeSmooth > 0f)       // EyeSmooth=<seconds> in SeVr.cfg, off by default
+            {
+                MatrixD ori = body.GetOrientation();
+                Vector3 offLocal = (Vector3)Vector3D.TransformNormal(camWorld.Translation - body.Translation, MatrixD.Transpose(ori));
+                if (Valid(offLocal))
+                {
+                    if (!eyeOffInit) { eyeOff = offLocal; eyeOffInit = true; }
+                    else eyeOff += (offLocal - eyeOff) * (1f - (float)Math.Exp(-dt / Plugin.Config.EyeSmooth));
+                    EyeBase = body.Translation + Vector3D.TransformNormal((Vector3D)eyeOff, ori);
+                    eyeBaseValid = true;
+                }
+            }
             Vector3 U = Vector3.Normalize((Vector3)body.Up);
             Vector3 bodyR = Vector3.Normalize((Vector3)body.Right), bodyF = Vector3.Normalize((Vector3)body.Forward);
 
@@ -160,6 +185,7 @@ namespace SeVr.Vr
             float y = Gain * eYaw / YawDegPerUnit;       // positive = turn right
             float x = -Gain * ePitch / (jet ? YawDegPerUnit : PitchDegPerUnit);  // positive = look down
             Inject = new Vector2(MathHelper.Clamp(x, -60f, 60f), MathHelper.Clamp(y, -60f, 60f));
+            if (!Valid(new Vector3(Inject, 0f)) || !ValidM(BaseM) || !ValidM(MoveToBody)) { Inject = Vector2.Zero; baseInit = false; MoveToBody = Matrix.Identity; return; }
             if (logCount++ % 90 == 0) Plugin.Log("head: errYaw " + eYaw.ToString("0.0") + " errPitch " + ePitch.ToString("0.0") + " inject " + Inject.X.ToString("0.0") + "," + Inject.Y.ToString("0.0"));
         }
 
@@ -175,8 +201,14 @@ namespace SeVr.Vr
             Matrix w = rot * BaseM;
             Vector3 off = Vector3.TransformNormal(eyeLocal.Translation - HeadRefPos, BaseM);
             MatrixD m = (MatrixD)w;
-            m.Translation = camWorld.Translation + (Vector3D)off;
+            m.Translation = (eyeBaseValid ? EyeBase : camWorld.Translation) + (Vector3D)off;
             return m;
+        }
+
+        static bool Valid(Vector3 v) { return !(float.IsNaN(v.X) || float.IsNaN(v.Y) || float.IsNaN(v.Z) || float.IsInfinity(v.X) || float.IsInfinity(v.Y) || float.IsInfinity(v.Z)) && v.LengthSquared() > 1e-6f; }
+        static bool ValidM(Matrix m)
+        {
+            return Valid(m.Right) && Valid(m.Up) && Valid(m.Backward);
         }
 
         static Matrix ArcMatrix(Vector3 from, Vector3 to)

@@ -132,7 +132,7 @@ float4 PS(PI i) : SV_Target { float3 n = normalize(i.nrm); float l = saturate(do
 
         // ------------------------------------------------------------------ text textures
 
-        static Tex GetTex(string key, Func<Bitmap> make)
+        static Tex GetTex(string key, Func<Bitmap> make, bool srgb = false)
         {
             Tex t;
             if (cache.TryGetValue(key, out t)) { t.Used = Environment.TickCount; return t; }
@@ -147,7 +147,7 @@ float4 PS(PI i) : SV_Target { float3 n = normalize(i.nrm); float l = saturate(do
                 var data = bmp.LockBits(new System.Drawing.Rectangle(0, 0, bmp.Width, bmp.Height), ImageLockMode.ReadOnly, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
                 var desc = new Texture2DDescription
                 {
-                    Width = bmp.Width, Height = bmp.Height, MipLevels = 1, ArraySize = 1, Format = Format.B8G8R8A8_UNorm,
+                    Width = bmp.Width, Height = bmp.Height, MipLevels = 1, ArraySize = 1, Format = srgb ? Format.B8G8R8A8_UNorm_SRgb : Format.B8G8R8A8_UNorm,
                     SampleDescription = new SampleDescription(1, 0), Usage = ResourceUsage.Immutable, BindFlags = BindFlags.ShaderResource
                 };
                 var tex = new Texture2D(dev, desc, new DataRectangle(data.Scan0, data.Stride));
@@ -231,6 +231,53 @@ float4 PS(PI i) : SV_Target { float3 n = normalize(i.nrm); float l = saturate(do
                 ctx.OutputMerger.SetRenderTargets((DepthStencilView)null, (RenderTargetView)null);
             }
             catch (Exception e) { Plugin.Log("overlay draw: " + e.Message); }
+        }
+
+        /// <summary>Draw the on-screen keyboard (a textured quad) onto the menu screen image. Rects are in UV (0..1, origin top left).</summary>
+        public static void DrawKeyboard(Device device, DeviceContext ctx, RenderTargetView rtv, int width, int height, System.Drawing.RectangleF rect, System.Drawing.RectangleF hover, float pressed)
+        {
+            if (!Init(device)) return;
+            try
+            {
+                ctx.OutputMerger.SetRenderTargets((DepthStencilView)null, rtv);
+                ctx.Rasterizer.SetViewport(0f, 0f, width, height, 0f, 1f);
+                ctx.Rasterizer.State = raster;
+                ctx.OutputMerger.SetDepthStencilState(noDepth);
+                ctx.OutputMerger.SetBlendState(blend, new SharpDX.Mathematics.Interop.RawColor4(0, 0, 0, 0), -1);
+                ctx.InputAssembler.PrimitiveTopology = SharpDX.Direct3D.PrimitiveTopology.TriangleList;
+                ctx.InputAssembler.InputLayout = ilB;
+                ctx.VertexShader.Set(vsB); ctx.PixelShader.Set(psB);
+                ctx.VertexShader.SetConstantBuffer(0, cbB);
+                ctx.PixelShader.SetSampler(0, sampler);
+                DataStream ds;
+                ctx.MapSubresource(cbB, MapMode.WriteDiscard, SharpDX.Direct3D11.MapFlags.None, out ds);
+                ds.WriteRange(new float[] { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 });     // identity: positions are clip coordinates
+                ctx.UnmapSubresource(cbB, 0);
+
+                var kb = GetTex(VrKeyboard.LayerKey(), VrKeyboard.MakeBitmap, true);
+                QuadUv(ctx, kb, rect, 1f, 1f, 1f, 1f);
+                if (!hover.IsEmpty)
+                {
+                    var white = GetTex("white", VrKeyboard.MakeWhite, true);
+                    QuadUv(ctx, white, hover, 0.45f, 0.75f, 1f, 0.35f + 0.45f * pressed);
+                }
+                ctx.OutputMerger.SetRenderTargets((DepthStencilView)null, (RenderTargetView)null);
+            }
+            catch (Exception e) { Plugin.Log("keyboard draw: " + e.Message); }
+        }
+
+        static void QuadUv(DeviceContext ctx, Tex tex, System.Drawing.RectangleF r, float cr, float cg, float cb, float ca)
+        {
+            float cx = (r.X + r.Width / 2f) * 2f - 1f, cy = 1f - (r.Y + r.Height / 2f) * 2f;
+            var list = new List<BV>(6);
+            WriteBill(list, new Vector3(cx, cy, 0.5f), r.Width, r.Height, 0, 0, 1, 1, cr, cg, cb, ca);
+            DataStream ds;
+            ctx.MapSubresource(vbB, MapMode.WriteDiscard, SharpDX.Direct3D11.MapFlags.None, out ds);
+            ds.WriteRange(list.ToArray());
+            ctx.UnmapSubresource(vbB, 0);
+            ctx.InputAssembler.SetVertexBuffers(0, new VertexBufferBinding(vbB, 36, 0));
+            ctx.PixelShader.SetShaderResource(0, tex.V);
+            ctx.Draw(6, 0);
         }
 
         static void DrawMarkers(DeviceContext ctx, MatrixD view, Matrix proj, List<VrMarkers.Marker> marks)

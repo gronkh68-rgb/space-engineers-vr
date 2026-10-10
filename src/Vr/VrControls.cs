@@ -162,6 +162,19 @@ namespace SeVr.Vr
                 // While the block is held in place for rotating (left grip while building), the right hand's buttons change the block:
                 // X = previous variant, B = next variant, Y = colour menu. Their normal actions are switched off meanwhile.
                 double now = System.Diagnostics.Stopwatch.GetTimestamp() / (double)System.Diagnostics.Stopwatch.Frequency;
+                // Right grip held on foot: D-pad sends F10 / Alt+F10 / Shift+F10 / Ctrl+F10, A / B / X / Y drive the build planner.
+                // The normal actions of those buttons are switched off meanwhile.
+                bool combo = VrHead.OnFoot && GripR > 0.65f;
+                raw["combo_up"] = combo && Raw("dpad_up"); raw["combo_down"] = combo && Raw("dpad_down");
+                raw["combo_left"] = combo && Raw("dpad_left"); raw["combo_right"] = combo && Raw("dpad_right");
+                raw["pl_a"] = combo && Raw("jump"); raw["pl_b"] = combo && Raw("crouch");
+                raw["pl_x"] = combo && (Raw("fx") || Raw("x")); raw["pl_y"] = combo && (Raw("fy") || Raw("y"));
+                if (combo)
+                {
+                    raw["dpad_up"] = false; raw["dpad_down"] = false; raw["dpad_left"] = false; raw["dpad_right"] = false;
+                    raw["jump"] = false; raw["crouch"] = false; raw["fx"] = false; raw["x"] = false; raw["fy"] = false; raw["y"] = false;
+                }
+                foreach (var cn in new[] { "combo_up", "combo_down", "combo_left", "combo_right", "pl_a", "pl_b", "pl_x", "pl_y" }) EdgePulse(cn, now, 0.35);
                 bool bx = Raw("fx") || Raw("x"), bb = Raw("crouch"), by = Raw("fy") || Raw("y");
                 // jetpack without a block in hand: freeze grip + D-pad left/right = Q/E roll
                 bool rollMode = !BuildMode && VrHead.OnFoot && VrHead.Jetpack && GripL > 0.65f;

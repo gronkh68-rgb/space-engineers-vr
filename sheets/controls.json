@@ -34,7 +34,26 @@
     {"id":"C_DPAD_DOWN","source":"dpad_down","gameControl":"KEY:Z","mode":"pulse","context":"both","note":"D-pad down: key Z"},
     {"id":"C_DPAD_UP","source":"dpad_up","gameControl":"KEY:F","mode":"pulse","context":"both","note":"D-pad up: key F"},
     {"id":"C_DPAD_RIGHT","source":"dpad_right","gameControl":"KEY:L","mode":"pulse","context":"both","note":"D-pad right: key L"},
-    {"id":"C_DPAD_LEFT","source":"dpad_left","gameControl":"KEY:J","mode":"pulse","context":"both","note":"D-pad left: key J (helmet)"}
+    {"id":"C_DPAD_LEFT","source":"dpad_left","gameControl":"KEY:J","mode":"pulse","context":"both","note":"D-pad left: key J (helmet)"},
+    {"id":"C_COMBO_UP","source":"combo_up","gameControl":"KEY:F10","mode":"pulse","context":"foot","note":"right grip held + D-pad up: F10"},
+    {"id":"C_COMBO_DOWN","source":"combo_down","gameControl":"KEY:F10","mode":"pulse","context":"foot","note":"right grip held + D-pad down: Alt+F10"},
+    {"id":"C_COMBO_DOWN_M","source":"combo_down","gameControl":"KEY:LeftAlt","mode":"pulse","context":"foot","note":"modifier for Alt+F10"},
+    {"id":"C_COMBO_LEFT","source":"combo_left","gameControl":"KEY:F10","mode":"pulse","context":"foot","note":"right grip held + D-pad left: Shift+F10"},
+    {"id":"C_COMBO_LEFT_M","source":"combo_left","gameControl":"KEY:LeftShift","mode":"pulse","context":"foot","note":"modifier for Shift+F10"},
+    {"id":"C_PL_A","source":"pl_a","gameControl":"BUILD_PLANNER","mode":"pulse","context":"foot","note":"right grip held + A: middle mouse button (build planner)"},
+    {"id":"C_KB_ENTER","source":"kb_enter","gameControl":"KEY:Enter","mode":"pulse","context":"both","note":"on-screen keyboard: Enter"},
+    {"id":"C_KB_LEFT","source":"kb_left","gameControl":"KEY:Left","mode":"pulse","context":"both","note":"on-screen keyboard: cursor left"},
+    {"id":"C_KB_RIGHT","source":"kb_right","gameControl":"KEY:Right","mode":"pulse","context":"both","note":"on-screen keyboard: cursor right"},
+    {"id":"C_COMBO_DOWN_G","source":"combo_down","gameControl":"KEY:Alt","mode":"pulse","context":"foot","note":"generic Alt for Alt+F10"},
+    {"id":"C_COMBO_LEFT_G","source":"combo_left","gameControl":"KEY:Shift","mode":"pulse","context":"foot","note":"generic Shift for Shift+F10"},
+    {"id":"C_PL_B","source":"pl_b","gameControl":"BUILD_PLANNER","mode":"pulse","context":"foot","note":"right grip held + B: Shift+MMB"},
+    {"id":"C_PL_B_S","source":"pl_b","gameControl":"KEY:Shift","mode":"pulse","context":"foot","note":"Shift for Shift+MMB"},
+    {"id":"C_PL_B_LS","source":"pl_b","gameControl":"KEY:LeftShift","mode":"pulse","context":"foot","note":"Shift for Shift+MMB"},
+    {"id":"C_PL_X","source":"pl_x","gameControl":"BUILD_PLANNER","mode":"pulse","context":"foot","note":"right grip held + X: Ctrl+MMB"},
+    {"id":"C_PL_X_C","source":"pl_x","gameControl":"KEY:Control","mode":"pulse","context":"foot","note":"Ctrl for Ctrl+MMB"},
+    {"id":"C_PL_X_LC","source":"pl_x","gameControl":"KEY:LeftControl","mode":"pulse","context":"foot","note":"Ctrl for Ctrl+MMB"},
+    {"id":"C_PL_Y","source":"pl_y","gameControl":"BUILD_PLANNER","mode":"pulse","context":"foot","note":"right grip held + Y: Alt+MMB"},
+    {"id":"C_PL_Y_A","source":"pl_y","gameControl":"KEY:Alt","mode":"pulse","context":"foot","note":"Alt for Alt+MMB"},
+    {"id":"C_PL_Y_LA","source":"pl_y","gameControl":"KEY:LeftAlt","mode":"pulse","context":"foot","note":"Alt for Alt+MMB"}
   ]
 }
-

@@ -26,6 +26,7 @@ namespace SeVr.Vr
         static bool Vr { get { return VrRenderer.Active && XrRuntime.Instance != null; } }
         static bool Gameplay { get { return Vr && !MenuState.IsMenuOpen(); } }
         static bool InMenu { get { return Vr && MenuState.IsMenuOpen(); } }
+        static bool KeyboardKeys { get { return InMenu && VrKeyboard.Visible; } }   // Enter / arrows of the on-screen keyboard work in menus
 
         public static void Install(Harmony h)
         {
@@ -38,6 +39,17 @@ namespace SeVr.Vr
             var t = typeof(MyVRageInput);
 
             h.Patch(AccessTools.Method(t, "UpdateStates", Type.EmptyTypes), prefix: m(nameof(UpdateStatesPrefix)), postfix: m(nameof(UpdateStatesPostfix)));
+            // the game fills its text buffer in Update(bool), after UpdateStates(): typed characters of the on-screen keyboard go in afterwards
+            var upd = AccessTools.Method(t, "Update", new[] { typeof(bool) });
+            if (upd != null) h.Patch(upd, postfix: m(nameof(UpdatePostfix)));
+            // Alt / Shift / Ctrl combinations (F10 shortcuts) ask these, not IsKeyPress
+            var alt = AccessTools.Method(t, "IsAnyAltKeyPressed"); if (alt != null) h.Patch(alt, postfix: m(nameof(AltPostfix)));
+            var shift = AccessTools.Method(t, "IsAnyShiftKeyPressed"); if (shift != null) h.Patch(shift, postfix: m(nameof(ShiftPostfix)));
+            var ctrl = AccessTools.Method(t, "IsAnyCtrlKeyPressed"); if (ctrl != null) h.Patch(ctrl, postfix: m(nameof(CtrlPostfix)));
+            // some game code (build planner, ...) asks MyControllerHelper.IsControl instead of IsNewGameControlPressed
+            var isCtl = AccessTools.Method(typeof(MyControllerHelper), "IsControl", new[] { typeof(MyStringId), typeof(MyStringId), typeof(MyControlStateType), typeof(bool), typeof(bool) });
+            if (isCtl != null) h.Patch(isCtl, postfix: m(nameof(IsControlPostfix)));
+            else Plugin.Log("input: MyControllerHelper.IsControl not found");
             h.Patch(AccessTools.Method(t, "IsJoystickAxisSupported"), postfix: m(nameof(AxisSupportedPostfix)));
             h.Patch(AccessTools.Method(t, "SetConnectedJoystick"), prefix: m(nameof(SetConnectedPrefix)));
 
@@ -76,10 +88,12 @@ namespace SeVr.Vr
 
         static void UpdateStatesPostfix(MyVRageInput __instance)
         {
+            if (statesLog < 3 && VrKeyboard.KbTestOn) { statesLog++; Plugin.Log("input: UpdateStates postfix, vr=" + Vr + " menu=" + (Vr && MenuState.IsMenuOpen())); }
             if (!Vr) return;
             VrControls.Tick();
             __instance.IsJoystickLastUsed = false;
-            if (!InMenu) return;
+            if (VrKeyboard.KbTestOn) { var none0 = default(MyMouseState); VrKeyboard.Process(__instance, XrRuntime.Instance, ref none0); return; }   // test switch
+            if (!InMenu) { VrKeyboard.Visible = false; return; }
 
             // menu open: the right controller's laser is the mouse, the right trigger the left button, the left trigger the right button
             var xr = XrRuntime.Instance;
@@ -89,7 +103,7 @@ namespace SeVr.Vr
                 mouseRawRef = AccessTools.FieldRefAccess<MyVRageInput, MyMouseState>("m_actualMouseStateRaw");
                 mousePosRef = AccessTools.FieldRefAccess<MyVRageInput, Vector2>("m_absoluteMousePosition");
             }
-            if (!xr.PointerValid) return;
+            if (!xr.PointerValid) { var none = default(MyMouseState); VrKeyboard.Process(__instance, xr, ref none); return; }
             // the game converts mouse pixels with the size of the *window* area, not of the VR image, so aim in that space
             Vector2 area = __instance.GetMouseAreaSize();
             float px = xr.PointerU * area.X, py = xr.PointerV * area.Y;
@@ -99,9 +113,42 @@ namespace SeVr.Vr
             ms.LeftButton = VrControls.TrigR > 0.5f;
             ms.RightButton = VrControls.TrigL > 0.5f || VrControls.GripR > 0.7f;
             ms.ScrollWheelValue += (int)(VrControls.TurnY * 45f);   // right stick scrolls lists
+            VrKeyboard.Process(__instance, xr, ref ms);      // on-screen keyboard: may swallow the click, queues typed characters
             mouseRef(__instance) = ms;
             mouseRawRef(__instance) = ms;
             try { __instance.SetMousePosition((int)px, (int)py); } catch { }
+        }
+
+        static void IsControlPostfix(MyStringId controlId, MyControlStateType type, ref bool __result)
+        {
+            if (__result || !Gameplay) return;
+            switch (type)
+            {
+                case MyControlStateType.NEW_PRESSED:
+                case MyControlStateType.NEW_PRESSED_REPEATING: __result = VrControls.NewPressed(controlId); break;
+                case MyControlStateType.PRESSED: __result = VrControls.Level(controlId); break;
+                case MyControlStateType.NEW_RELEASED: __result = VrControls.NewReleased(controlId); break;
+            }
+        }
+
+        static void UpdatePostfix(MyVRageInput __instance)
+        {
+            if (Vr) VrKeyboard.Flush(__instance);
+        }
+
+        static void AltPostfix(ref bool __result)
+        {
+            if (!__result && Gameplay && (VrControls.KeyLevel(MyKeys.LeftAlt) || VrControls.KeyLevel(MyKeys.RightAlt))) __result = true;
+        }
+
+        static void ShiftPostfix(ref bool __result)
+        {
+            if (!__result && Gameplay && (VrControls.KeyLevel(MyKeys.LeftShift) || VrControls.KeyLevel(MyKeys.RightShift))) __result = true;
+        }
+
+        static void CtrlPostfix(ref bool __result)
+        {
+            if (!__result && Gameplay && (VrControls.KeyLevel(MyKeys.LeftControl) || VrControls.KeyLevel(MyKeys.RightControl))) __result = true;
         }
 
         static bool SetConnectedPrefix(string joystickInstanceName)
@@ -127,7 +174,7 @@ namespace SeVr.Vr
             }
         }
 
-        static int pulseLog;
+        static int pulseLog, statesLog;
 
         static void NewReleasedPostfix(MyStringId controlId, ref bool __result)
         {
@@ -145,18 +192,18 @@ namespace SeVr.Vr
 
         static void KeyPressPostfix(MyKeys key, ref bool __result)
         {
-            if (!__result && VrControls.KeyLevel(key) && Gameplay) __result = true;
+            if (!__result && VrControls.KeyLevel(key) && (Gameplay || KeyboardKeys)) __result = true;
         }
 
         static void KeyNewPressedPostfix(MyKeys key, ref bool __result)
         {
             if (!__result && key == MyKeys.Escape && VrControls.MenuBackPressed() && InMenu) { __result = true; return; }
-            if (!__result && VrControls.KeyNewPressed(key) && Gameplay) __result = true;
+            if (!__result && VrControls.KeyNewPressed(key) && (Gameplay || KeyboardKeys)) __result = true;
         }
 
         static void KeyNewReleasedPostfix(MyKeys key, ref bool __result)
         {
-            if (!__result && VrControls.KeyNewReleased(key) && Gameplay) __result = true;
+            if (!__result && VrControls.KeyNewReleased(key) && (Gameplay || KeyboardKeys)) __result = true;
         }
 
         static float Clamp1(float v) { return v < -1f ? -1f : (v > 1f ? 1f : v); }
@@ -184,7 +231,8 @@ namespace SeVr.Vr
             if (VrHead.OnFoot)
             {
                 // head steering: the closed loop in VrHead turns the engine's camera towards the head direction
-                __result += VrHead.Inject;
+                var inj = VrHead.Inject;
+                if (!float.IsNaN(inj.X) && !float.IsInfinity(inj.X) && !float.IsNaN(inj.Y) && !float.IsInfinity(inj.Y)) __result += inj;
             }
             else
             {

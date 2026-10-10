@@ -355,8 +355,10 @@ namespace SeVr.Vr
             try
             {
                 if (!Active) return true;
-                if (inSecondPass) return false;
 
+                // The engine starts a parallel sprite task in every Draw and waits for it here. The second (right-eye) pass must wait
+                // for its task too and throw the result away; otherwise it keeps running into the next frame's task and the two race
+                // on the sprite renderer's lists and buffers (crash while loading, corrupted icons).
                 var taskField = tRender11.GetField("m_mainSpritesTask", All);
                 object task = taskField.GetValue(null);
                 var validF = task.GetType().GetField("valid");
@@ -365,8 +367,12 @@ namespace SeVr.Vr
                 wait.Invoke(task, wait.GetParameters().Length == 1 ? new object[] { true } : new object[0]);
                 object fc = mainSpritesFc.GetValue(null);
                 var cl = fc.GetType().GetField("CommandList").GetValue(fc) as CommandList;
-                if (spriteStash != null) { spriteStash.Dispose(); spriteStash = null; }
-                if (cl != null)
+                if (inSecondPass)
+                {
+                    if (cl != null) cl.Dispose();     // right-eye pass: the HUD of pass 1 is the one that is used
+                }
+                else if (spriteStash != null) { spriteStash.Dispose(); spriteStash = null; }
+                if (cl != null && !inSecondPass)
                 {
                     Marshal.AddRef(cl.NativePointer);
                     spriteStash = new CommandList(cl.NativePointer);
@@ -396,6 +402,7 @@ namespace SeVr.Vr
             var rc = rcProp.GetValue(null);
             var rawFalse = Activator.CreateInstance(executeCommandList.GetParameters()[1].ParameterType, false);
             executeCommandList.Invoke(rc, new object[] { spriteStash, rawFalse });
+            VrKeyboard.DrawOnScreen(src.Device, ctx, rtv, d.Width, d.Height);     // on-screen keyboard on top of the menu
 
             Texture2D dst;
             if (xr.Fake)
@@ -504,9 +511,10 @@ namespace SeVr.Vr
         }
 
         static int capFrames; static bool captured;
+        static readonly int capTarget = int.TryParse(Environment.GetEnvironmentVariable("SEVR_CAPFRAMES"), out int cf) ? cf : 900;
         static void DebugCapture()
         {
-            if (captured || !ranSecondPass || ++capFrames < 900) return;
+            if (captured || !ranSecondPass || ++capFrames < capTarget) return;
             captured = true;
             SaveTex(fakeComposite, "SeVr_capture.png", false);
             if (hudFake != null) SaveTex(hudFake, "SeVr_hud.png", true);
