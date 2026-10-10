@@ -14,7 +14,7 @@ Status: **early access**. Tested so far with a Steam Frame over SteamVR.
 - Cockpits: sticks fly, grips roll, LB / RB move a hotbar cursor, right stick click activates the slot. The D-pad sends the keys F, Z, L and G.
 - Bindings for the Steam Frame controller (native profile), Touch, Index, Pico, WMR and generic controllers.
 
-Single-player view only: the plugin has no multiplayer features of its own.
+Works in Multiplayer (Sort of)
 
 ## Install
 Install **Pulsar**, open the plugin list, enable **Space Engineers VR** and start the game with your headset's OpenXR runtime active (SteamVR: Settings, OpenXR, "Set SteamVR as OpenXR runtime"). Without a headset the game starts normally.
