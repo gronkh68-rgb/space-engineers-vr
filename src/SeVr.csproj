@@ -1,7 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net48</TargetFramework>
-    <AssemblyName>SeVr</AssemblyName>
+    <AssemblyName>Space VR</AssemblyName>
     <RootNamespace>SeVr</RootNamespace>
     <LangVersion>10.0</LangVersion>
     <Platforms>x64</Platforms>
@@ -38,6 +38,7 @@
     <Reference Include="System.Drawing" />
   </ItemGroup>
 </Project>
+
 
 
 

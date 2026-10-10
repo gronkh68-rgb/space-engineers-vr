@@ -2,7 +2,7 @@
 <PluginData xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="GitHubPlugin">
   <Id>e3f462c3-2469-4326-95e0-a0fa2148cd3e</Id>
   <RepoId>gronkh68-rgb/space-engineers-vr</RepoId>
-  <FriendlyName>Space Engineers VR</FriendlyName>
+  <FriendlyName>Space VR</FriendlyName>
   <Author>Fuchs</Author>
   <Tooltip>Play Space Engineers in VR with OpenXR (SteamVR, Meta, Virtual Desktop, WMR). Early access.</Tooltip>
   <Description>Play Space Engineers in virtual reality through OpenXR. Early access, tested with a Steam Frame over SteamVR and a Quest 2.
@@ -19,4 +19,5 @@ Source and controls: https://github.com/gronkh68-rgb/space-engineers-vr</Descrip
   <Hidden>false</Hidden>
   <Commit>TODO</Commit>
 </PluginData>
+
 
