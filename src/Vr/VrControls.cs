@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Reflection;
 using Sandbox.Game;
@@ -69,8 +69,16 @@ namespace SeVr.Vr
             if (built) return;
             built = true;
             var t = typeof(MyControlsSpace);
-            foreach (var row in ControlMap.Rows)
+            foreach (var row0 in ControlMap.Rows)
             {
+                // the player may have assigned another game control to this VR input (Bind.<source>=... in SeVr.cfg, edited in the settings screen)
+                var row = row0;
+                string bound;
+                if (!row0.GameControl.StartsWith("KEY:") && Plugin.Config.Binds.TryGetValue(row0.Source, out bound))
+                {
+                    if (string.Equals(bound, "none", StringComparison.OrdinalIgnoreCase)) { S(row0.Source); continue; }
+                    row = new ControlRow(row0.Id, row0.Source, bound, row0.Mode, row0.Context);
+                }
                 if (row.GameControl.StartsWith("KEY:"))
                 {
                     // a real keyboard key (works whatever the player bound that key to)
@@ -90,6 +98,12 @@ namespace SeVr.Vr
                 list.Add(row);
                 S(row.Source);
             }
+        }
+
+        /// <summary>Read the control table again (after the player changed a binding).</summary>
+        public static void Rebuild()
+        {
+            lock (gate) { built = false; byControl.Clear(); byKey.Clear(); }
         }
 
         // ------------------------------------------------------------ writers (render thread)
@@ -162,6 +176,27 @@ namespace SeVr.Vr
                 // While the block is held in place for rotating (left grip while building), the right hand's buttons change the block:
                 // X = previous variant, B = next variant, Y = colour menu. Their normal actions are switched off meanwhile.
                 double now = System.Diagnostics.Stopwatch.GetTimestamp() / (double)System.Diagnostics.Stopwatch.Frequency;
+                // Controllers without a D-pad (Touch, Pico, ...): body zones, and a grip plus the right stick stands in for the D-pad.
+                var xr = Xr.XrRuntime.Instance;
+                bool touchStyle = xr != null && !xr.IsFrameController;
+                bool menuOpen = xr != null && MenuState.IsMenuOpen();
+                bool zones = xr != null && !menuOpen && ZonesWanted(touchStyle);
+                if (zones)
+                {
+                    VrZones.Update(xr);
+                    ZoneHand(true, xr, VrZones.ZoneL, ref TrigL, ref GripL, ref prevZoneL, ref tHeldL, ref gHeldL);
+                    ZoneHand(false, xr, VrZones.ZoneR, ref TrigR, ref GripR, ref prevZoneR, ref tHeldR, ref gHeldR);
+                }
+                else { prevZoneL = prevZoneR = VrZones.Zone.None; tHeldL = tHeldR = gHeldL = gHeldR = false; }
+                if (touchStyle && !menuOpen && VrHead.OnFoot && (GripL > 0.65f || GripR > 0.65f))
+                {
+                    float sx = TurnX, sy = TurnY;
+                    bool vert = Math.Abs(sy) >= Math.Abs(sx);
+                    if (vert && sy > 0.7f) raw["dpad_up"] = true; else if (vert && sy < -0.7f) raw["dpad_down"] = true;
+                    else if (!vert && sx > 0.7f) raw["dpad_right"] = true; else if (!vert && sx < -0.7f) raw["dpad_left"] = true;
+                    TurnX = 0f; TurnY = 0f;                        // the stick is a D-pad while a grip is held
+                }
+
                 // Right grip held on foot: D-pad sends F10 / Alt+F10 / Shift+F10 / Ctrl+F10, A / B / X / Y drive the build planner.
                 // The normal actions of those buttons are switched off meanwhile.
                 bool combo = VrHead.OnFoot && GripR > 0.65f;
@@ -207,6 +242,32 @@ namespace SeVr.Vr
                 Hold(Raw("x"), ref xDown, ref xHoldFired, dt, "x_tap", "x_hold");
                 Hold(Raw("y"), ref yDown, ref yHoldFired, dt, "y_tap", "y_hold");
             }
+        }
+
+        static VrZones.Zone prevZoneL, prevZoneR;
+        static bool tHeldL, tHeldR, gHeldL, gHeldR;
+
+        static bool ZonesWanted(bool touchStyle)
+        {
+            string z = Plugin.Config.Zones;
+            if (z == "on") return true;
+            if (z == "off") return false;
+            return true;
+        }
+
+        // a hand in a zone owns its trigger and grip: they fire the zone's action instead of the normal one
+        static void ZoneHand(bool left, Xr.XrRuntime xr, VrZones.Zone z, ref float trig, ref float grip, ref VrZones.Zone prev, ref bool tHeld, ref bool gHeld)
+        {
+            bool tNow = trig > 0.6f, gNow = grip > 0.6f;
+            if (z != VrZones.Zone.None)
+            {
+                if (prev == VrZones.Zone.None) xr.Haptic(left, 0.035f, 0.45f);        // short buzz when the hand enters a zone
+                string n = "z_" + VrZones.Name(z);
+                if (tNow && !tHeld) { Pulse(n + "_t"); xr.Haptic(left, 0.06f, 0.8f); }
+                if (gNow && !gHeld) { Pulse(n + "_g"); xr.Haptic(left, 0.06f, 0.8f); }
+                trig = 0f; grip = 0f;
+            }
+            tHeld = tNow; gHeld = gNow; prev = z;
         }
 
         static readonly Dictionary<string, bool> edgePrev = new Dictionary<string, bool>();
@@ -256,16 +317,18 @@ namespace SeVr.Vr
                     s.PrevTick = now;
                     s.RiseLatch = false; s.FallLatch = false;
                 }
-                seatLeft = !VrHead.OnFoot && S("bump_l").NewPressedTick;
-                seatRight = !VrHead.OnFoot && S("bump_r").NewPressedTick;
-                seatActivate = !VrHead.OnFoot && S("jetpack").NewPressedTick;
+                seatLeft = !VrHead.OnFoot && (S("bump_l").NewPressedTick || S("z_lhip_g").NewPressedTick);
+                seatRight = !VrHead.OnFoot && (S("bump_r").NewPressedTick || S("z_rhip_g").NewPressedTick);
+                seatActivate = !VrHead.OnFoot && (S("jetpack").NewPressedTick || S("z_lhip_t").NewPressedTick || S("z_rhip_t").NewPressedTick);
+                holster = VrHead.OnFoot && (S("z_lhip_t").NewPressedTick || S("z_rhip_t").NewPressedTick);
             }
             // cockpit hotbar: D-pad left/right moves the cursor, right stick click activates the slot under it
             if (seatLeft) VrToolbar.Move(-1);
             if (seatRight) VrToolbar.Move(1);
             if (seatActivate) VrToolbar.Activate();
+            if (holster) VrToolbar.ToggleHolster();
         }
-        static bool seatLeft, seatRight, seatActivate;
+        static bool seatLeft, seatRight, seatActivate, holster;
 
         static bool Applies(ControlRow r)
         {
@@ -321,3 +384,4 @@ namespace SeVr.Vr
         }
     }
 }
+

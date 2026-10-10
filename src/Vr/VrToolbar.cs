@@ -45,6 +45,22 @@ namespace SeVr.Vr
             catch (Exception e) { if (logCount++ < 6) Plugin.Log("toolbar activate: " + e.Message); }
         }
 
+        static int lastEquipped = -1;
+
+        /// <summary>On foot: put the tool or weapon away, or take the last one out again.</summary>
+        public static void ToggleHolster()
+        {
+            try
+            {
+                var tb = Current;
+                if (tb == null) return;
+                int? sel = tb.SelectedSlot;
+                if (sel.HasValue) { lastEquipped = sel.Value; tb.Unselect(true); }
+                else if (lastEquipped >= 0) tb.ActivateItemAtSlot(lastEquipped, false, true, true);
+            }
+            catch (Exception e) { if (logCount++ < 6) Plugin.Log("toolbar holster: " + e.Message); }
+        }
+
         public static void Reset() { cursor = -1; }
     }
 }

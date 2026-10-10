@@ -12,8 +12,6 @@
     {"id":"C_INVENTORY","source":"y_hold","gameControl":"INVENTORY","mode":"pulse","context":"both","note":"Touch: Y hold: inventory"},
     {"id":"C_SPRINT","source":"sprint","gameControl":"SPRINT","mode":"level","context":"foot","note":"left stick click: sprint"},
     {"id":"C_JETPACK","source":"jetpack","gameControl":"THRUSTS","mode":"pulse","context":"foot","note":"right stick click: jetpack on/off"},
-    {"id":"C_TB_PREV","source":"grip_l","gameControl":"TOOLBAR_PREV_ITEM","mode":"pulse","context":"touchfoot","note":"Touch: left grip: previous hotbar slot"},
-    {"id":"C_TB_NEXT","source":"grip_r","gameControl":"TOOLBAR_NEXT_ITEM","mode":"pulse","context":"touchfoot","note":"Touch: right grip: next hotbar slot"},
     {"id":"C_TB_PREV_B","source":"bump_l","gameControl":"TOOLBAR_PREV_ITEM","mode":"pulse","context":"foot","note":"Frame: left bumper (LB): previous hotbar slot, also in a cockpit"},
     {"id":"C_TB_NEXT_B","source":"bump_r","gameControl":"TOOLBAR_NEXT_ITEM","mode":"pulse","context":"foot","note":"Frame: right bumper (RB): next hotbar slot, also in a cockpit"},
     {"id":"C_ROLL_L","source":"grip_l","gameControl":"ROLL_LEFT","mode":"analog","context":"seat","note":"left grip: roll left in a ship"},
@@ -54,6 +52,18 @@
     {"id":"C_PL_X_LC","source":"pl_x","gameControl":"KEY:LeftControl","mode":"pulse","context":"foot","note":"Ctrl for Ctrl+MMB"},
     {"id":"C_PL_Y","source":"pl_y","gameControl":"BUILD_PLANNER","mode":"pulse","context":"foot","note":"right grip held + Y: Alt+MMB"},
     {"id":"C_PL_Y_A","source":"pl_y","gameControl":"KEY:Alt","mode":"pulse","context":"foot","note":"Alt for Alt+MMB"},
-    {"id":"C_PL_Y_LA","source":"pl_y","gameControl":"KEY:LeftAlt","mode":"pulse","context":"foot","note":"Alt for Alt+MMB"}
+    {"id":"C_PL_Y_LA","source":"pl_y","gameControl":"KEY:LeftAlt","mode":"pulse","context":"foot","note":"Alt for Alt+MMB"},
+    {"id":"C_Z_CHEST_T","source":"z_chest_t","gameControl":"INVENTORY","mode":"pulse","context":"both","note":"zone chest + trigger: inventory"},
+    {"id":"C_Z_CHEST_G","source":"z_chest_g","gameControl":"TERMINAL","mode":"pulse","context":"both","note":"zone chest + grip: terminal"},
+    {"id":"C_Z_SHOULDER_G","source":"z_shoulder_g","gameControl":"LANDING_GEAR","mode":"pulse","context":"both","note":"zone shoulder + grip: landing gear"},
+    {"id":"C_Z_RHIP_G","source":"z_rhip_g","gameControl":"TOOLBAR_NEXT_ITEM","mode":"pulse","context":"foot","note":"zone right hip + grip: next hotbar slot (cockpit: cursor)"},
+    {"id":"C_Z_LHIP_G","source":"z_lhip_g","gameControl":"TOOLBAR_PREV_ITEM","mode":"pulse","context":"foot","note":"zone left hip + grip: previous hotbar slot (cockpit: cursor)"},
+    {"id":"C_Z_RHEAD_T","source":"z_rhead_t","gameControl":"HEADLIGHTS","mode":"pulse","context":"both","note":"zone right of the head + trigger: flashlight"},
+    {"id":"C_Z_RHEAD_G","source":"z_rhead_g","gameControl":"HELMET","mode":"pulse","context":"both","note":"zone right of the head + grip: helmet"},
+    {"id":"C_Z_LHEAD_T","source":"z_lhead_t","gameControl":"TOGGLE_SIGNALS","mode":"pulse","context":"both","note":"zone left of the head + trigger: GPS markers on/off"},
+    {"id":"C_Z_LHEAD_G","source":"z_lhead_g","gameControl":"BROADCASTING","mode":"pulse","context":"both","note":"zone left of the head + grip: O (broadcasting)"},
+    {"id":"C_Z_LSHOULDER_T","source":"z_lshoulder_t","gameControl":"BUILD_SCREEN","mode":"pulse","context":"both","note":"zone left shoulder + trigger: block menu (G)"},
+    {"id":"C_Z_LSHOULDER_G","source":"z_lshoulder_g","gameControl":"TOGGLE_HUD","mode":"pulse","context":"both","note":"zone left shoulder + grip: hide HUD"}
   ]
 }
+

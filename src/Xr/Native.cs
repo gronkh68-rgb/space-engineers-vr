@@ -113,6 +113,9 @@ namespace SeVr.Xr
         [StructLayout(LayoutKind.Sequential)] public struct ActiveActionSet { public ulong actionSet; public ulong subactionPath; }
         [StructLayout(LayoutKind.Sequential)] public struct ActionsSyncInfo { public T type; public void* next; public uint countActiveActionSets; public ActiveActionSet* activeActionSets; }
         [StructLayout(LayoutKind.Sequential)] public struct ActionStateGetInfo { public T type; public void* next; public ulong action; public ulong subactionPath; }
+        [StructLayout(LayoutKind.Sequential)] public struct HapticActionInfo { public T type; public void* next; public ulong action; public ulong subactionPath; }
+        [StructLayout(LayoutKind.Sequential)] public struct HapticVibration { public T type; public void* next; public long duration; public float frequency; public float amplitude; }
+        [StructLayout(LayoutKind.Sequential)] public struct InteractionProfileState { public T type; public void* next; public ulong interactionProfile; }
         [StructLayout(LayoutKind.Sequential)] public struct ActionStateBoolean { public T type; public void* next; public uint currentState; public uint changedSinceLastSync; public long lastChangeTime; public uint isActive; }
         [StructLayout(LayoutKind.Sequential)] public struct ActionStateFloat { public T type; public void* next; public float currentState; public uint changedSinceLastSync; public long lastChangeTime; public uint isActive; }
         [StructLayout(LayoutKind.Sequential)] public struct ActionStateVector2f { public T type; public void* next; public float x, y; public uint changedSinceLastSync; public long lastChangeTime; public uint isActive; }
@@ -148,6 +151,9 @@ namespace SeVr.Xr
         [DllImport(L, CallingConvention = CallingConvention.Cdecl)] public static extern int xrSuggestInteractionProfileBindings(ulong instance, ref InteractionProfileSuggestedBinding info);
         [DllImport(L, CallingConvention = CallingConvention.Cdecl)] public static extern int xrAttachSessionActionSets(ulong session, ref SessionActionSetsAttachInfo info);
         [DllImport(L, CallingConvention = CallingConvention.Cdecl)] public static extern int xrCreateActionSpace(ulong session, ref ActionSpaceCreateInfo info, out ulong space);
+        [DllImport(L, CallingConvention = CallingConvention.Cdecl)] public static extern int xrApplyHapticFeedback(ulong session, ref HapticActionInfo info, ref HapticVibration vib);
+        [DllImport(L, CallingConvention = CallingConvention.Cdecl)] public static extern int xrGetCurrentInteractionProfile(ulong session, ulong topLevelUserPath, ref InteractionProfileState state);
+        [DllImport(L, CallingConvention = CallingConvention.Cdecl)] public static extern int xrPathToString(ulong instance, ulong path, uint capacity, out uint count, byte* buffer);
         [DllImport(L, CallingConvention = CallingConvention.Cdecl)] public static extern int xrSyncActions(ulong session, ref ActionsSyncInfo info);
         [DllImport(L, CallingConvention = CallingConvention.Cdecl)] public static extern int xrGetActionStateBoolean(ulong session, ref ActionStateGetInfo info, ref ActionStateBoolean state);
         [DllImport(L, CallingConvention = CallingConvention.Cdecl)] public static extern int xrGetActionStateFloat(ulong session, ref ActionStateGetInfo info, ref ActionStateFloat state);

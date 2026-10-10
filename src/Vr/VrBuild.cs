@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Reflection;
 using HarmonyLib;
 using Sandbox.Game.Entities;
@@ -48,7 +48,7 @@ namespace SeVr.Vr
 
         static MatrixD HandWorld()
         {
-            return VrHead.EyeWorld(VrRenderer.PoseMatrix(XrRuntime.Instance.HandR), VrRenderer.CamWorld);
+            return VrHead.EyeWorldUpd(VrRenderer.PoseMatrix(XrRuntime.Instance.HandR));
         }
 
         // while the rotate button is held the block keeps the place it had, so the wrist can be turned freely
@@ -117,3 +117,4 @@ namespace SeVr.Vr
         }
     }
 }
+

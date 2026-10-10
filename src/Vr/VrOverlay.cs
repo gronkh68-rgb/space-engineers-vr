@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
@@ -31,7 +31,8 @@ Texture2D tex : register(t0); SamplerState smp : register(s0);
 struct VI { float3 pos : POSITION; float2 uv : TEXCOORD0; float4 col : COLOR0; };
 struct PI { float4 pos : SV_POSITION; float2 uv : TEXCOORD0; float4 col : COLOR0; };
 PI VS(VI i) { PI o; o.pos = mul(float4(i.pos, 1), P); o.uv = i.uv; o.col = i.col; return o; }
-float4 PS(PI i) : SV_Target { float4 c = tex.Sample(smp, i.uv); return float4(c.rgb * i.col.rgb * i.col.a, c.a * i.col.a); }";
+float4 PS(PI i) : SV_Target { float4 c = tex.Sample(smp, i.uv); return float4(c.rgb * i.col.rgb * i.col.a, c.a * i.col.a); }
+float4 PSH(PI i) : SV_Target { float4 c = tex.Sample(smp, i.uv); return float4(c.rgb * c.a * i.col.a, c.a * i.col.a); }";
 
         const string MeshHlsl = @"
 cbuffer C : register(b0) { row_major float4x4 WVP; row_major float4x4 WV; float4 color; };
@@ -42,7 +43,9 @@ float4 PS(PI i) : SV_Target { float3 n = normalize(i.nrm); float l = saturate(do
 
         static bool initTried, ready;
         static Device dev;
-        static VertexShader vsB, vsM; static PixelShader psB, psM;
+        static VertexShader vsB, vsM; static PixelShader psB, psM, psH;
+        /// <summary>The HUD picture the game drew its markers into (straight alpha), and the field of view it was drawn for.</summary>
+        public static ShaderResourceView HudSrv; public static int HudW, HudH; public static float HudTanX = 1f, HudTanY = 1f;
         static InputLayout ilB, ilM;
         static Buffer cbB, cbM, vbB, vbHand;
         static BlendState blend; static RasterizerState raster; static DepthStencilState noDepth; static SamplerState sampler;
@@ -67,6 +70,9 @@ float4 PS(PI i) : SV_Target { float3 n = normalize(i.nrm); float l = saturate(do
                 var mp = ShaderBytecode.Compile(MeshHlsl, "PS", "ps_5_0");
                 if (b.HasErrors || bp.HasErrors || m.HasErrors || mp.HasErrors) { Plugin.Log("overlay: shader error " + b.Message + bp.Message + m.Message + mp.Message); return false; }
                 vsB = new VertexShader(dev, b.Bytecode); psB = new PixelShader(dev, bp.Bytecode);
+                var bh = ShaderBytecode.Compile(BillboardHlsl, "PSH", "ps_5_0");
+                if (bh.HasErrors) { Plugin.Log("overlay: PSH error " + bh.Message); return false; }
+                psH = new PixelShader(dev, bh.Bytecode);
                 vsM = new VertexShader(dev, m.Bytecode); psM = new PixelShader(dev, mp.Bytecode);
                 ilB = new InputLayout(dev, ShaderSignature.GetInputSignature(b.Bytecode), new[] {
                     new InputElement("POSITION", 0, Format.R32G32B32_Float, 0, 0),
@@ -293,6 +299,8 @@ float4 PS(PI i) : SV_Target { float3 n = normalize(i.nrm); float l = saturate(do
             ctx.UnmapSubresource(cbB, 0);
 
             int shown = 0;
+            bool sprite = HudSrv != null && Plugin.Config.Markers != "custom";
+            if (sprite) { ctx.PixelShader.Set(psH); ctx.PixelShader.SetShaderResource(0, HudSrv); }
             foreach (var m in marks)
             {
                 if (shown >= 24) break;
@@ -302,6 +310,25 @@ float4 PS(PI i) : SV_Target { float3 n = normalize(i.nrm); float l = saturate(do
                 float r = (float)Math.Min(d, 60.0);                     // far markers sit at 60 m in their true direction
                 Vector3 dir = (Vector3)(p / d);
                 Vector3 c = dir * r;
+                if (sprite)
+                {
+                    // the game's own sprites of this marker (icon, name, distance), cut out of its HUD picture and put at the marker's real place
+                    int sx0, sy0, sx1, sy1;
+                    if (!VrMarkers.Rect(m, HudW, HudH, out sx0, out sy0, out sx1, out sy1)) continue;
+                    float unitX = 2f * HudTanX / HudW * r, unitY = 2f * HudTanY / HudH * r;      // metres per pixel at this distance
+                    float anchorY = (0.5f - m.Ndc.Y * 0.5f) * HudH;
+                    float cy = (sy0 + sy1) * 0.5f;
+                    Vector3 cs = c + new Vector3(0f, -(cy - anchorY) * unitY, 0f);
+                    var ls = new List<BV>(6);
+                    WriteBill(ls, cs, (sx1 - sx0) * 0.5f * unitX, (sy1 - sy0) * 0.5f * unitY, (float)sx0 / HudW, (float)sy0 / HudH, (float)sx1 / HudW, (float)sy1 / HudH, 1, 1, 1, 1f);
+                    ctx.MapSubresource(vbB, MapMode.WriteDiscard, SharpDX.Direct3D11.MapFlags.None, out ds);
+                    ds.WriteRange(ls.ToArray());
+                    ctx.UnmapSubresource(vbB, 0);
+                    ctx.InputAssembler.SetVertexBuffers(0, new VertexBufferBinding(vbB, 36, 0));
+                    ctx.Draw(6, 0);
+                    shown++;
+                    continue;
+                }
                 float gaze = (float)Math.Acos(Math.Max(-1.0, Math.Min(1.0, -dir.Z)));   // angle from straight ahead
                 float textA = Math.Max(0f, Math.Min(1f, 1f - (gaze - 0.20f) / 0.25f));
                 float k = r * 0.030f;                                    // icon half size: ~3.4 degrees
@@ -337,6 +364,182 @@ float4 PS(PI i) : SV_Target { float3 n = normalize(i.nrm); float l = saturate(do
             }
         }
 
+        // ------------------------------------------------------------------ 2D drawing for the own HUD panels (pixel coordinates, origin top left)
+
+        static DeviceContext c2; static int w2, h2; static bool srgb2;
+        /// <summary>Everything drawn for the own HUD panels is multiplied by this (the HUD opacity setting).</summary>
+        public static float Opacity = 1f;
+        static readonly Dictionary<string, Tex> icons = new Dictionary<string, Tex>();
+
+        /// <summary>Start drawing into a panel image. Straight pixel coordinates; colours are given as sRGB bytes.</summary>
+        public static bool Begin2D(Device device, DeviceContext ctx, RenderTargetView rtv, int width, int height, bool srgbTarget)
+        {
+            if (!Init(device)) return false;
+            try
+            {
+                c2 = ctx; w2 = width; h2 = height; srgb2 = srgbTarget;
+                Opacity = Math.Max(0.15f, Math.Min(1f, Plugin.Config.HudOpacity));
+                ctx.ClearRenderTargetView(rtv, new SharpDX.Mathematics.Interop.RawColor4(0f, 0f, 0f, 0f));
+                ctx.OutputMerger.SetRenderTargets((DepthStencilView)null, rtv);
+                ctx.Rasterizer.SetViewport(0f, 0f, width, height, 0f, 1f);
+                ctx.Rasterizer.State = raster;
+                ctx.OutputMerger.SetDepthStencilState(noDepth);
+                ctx.OutputMerger.SetBlendState(blend, new SharpDX.Mathematics.Interop.RawColor4(0, 0, 0, 0), -1);
+                ctx.InputAssembler.PrimitiveTopology = SharpDX.Direct3D.PrimitiveTopology.TriangleList;
+                ctx.InputAssembler.InputLayout = ilB;
+                ctx.VertexShader.Set(vsB); ctx.PixelShader.Set(psB);
+                ctx.VertexShader.SetConstantBuffer(0, cbB);
+                ctx.PixelShader.SetSampler(0, sampler);
+                DataStream ds;
+                ctx.MapSubresource(cbB, MapMode.WriteDiscard, SharpDX.Direct3D11.MapFlags.None, out ds);
+                ds.WriteRange(new float[] { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 });     // identity: positions are clip coordinates
+                ctx.UnmapSubresource(cbB, 0);
+                return true;
+            }
+            catch (Exception e) { Plugin.Log("2d begin: " + e.Message); return false; }
+        }
+
+        public static void End2D()
+        {
+            try { if (c2 != null) c2.OutputMerger.SetRenderTargets((DepthStencilView)null, (RenderTargetView)null); } catch { }
+            c2 = null;
+        }
+
+        static float Lin(int v) { float f = v / 255f; return srgb2 ? (float)Math.Pow(f, 2.2) : f; }
+
+        static void Quad2(Tex tex, float x, float y, float w, float h, float u0, float v0, float u1, float v1, int r, int g, int b, int a)
+        {
+            if (c2 == null || tex == null || w <= 0f || h <= 0f) return;
+            float cx = (x + w / 2f) / w2 * 2f - 1f, cy = 1f - (y + h / 2f) / h2 * 2f;
+            var list = new List<BV>(6);
+            WriteBill(list, new Vector3(cx, cy, 0.5f), w / w2, h / h2, u0, v0, u1, v1, Lin(r), Lin(g), Lin(b), a / 255f * Opacity);
+            DataStream ds;
+            c2.MapSubresource(vbB, MapMode.WriteDiscard, SharpDX.Direct3D11.MapFlags.None, out ds);
+            ds.WriteRange(list.ToArray());
+            c2.UnmapSubresource(vbB, 0);
+            c2.InputAssembler.SetVertexBuffers(0, new VertexBufferBinding(vbB, 36, 0));
+            c2.PixelShader.SetShaderResource(0, tex.V);
+            c2.Draw(6, 0);
+        }
+
+        public static void FillRect(float x, float y, float w, float h, int r, int g, int b, int a)
+        {
+            Quad2(GetTex("white", VrKeyboard.MakeWhite, true), x, y, w, h, 0, 0, 1, 1, r, g, b, a);
+        }
+
+        public static void FrameRect(float x, float y, float w, float h, float t, int r, int g, int b, int a)
+        {
+            FillRect(x, y, w, t, r, g, b, a); FillRect(x, y + h - t, w, t, r, g, b, a);
+            FillRect(x, y + t, t, h - 2 * t, r, g, b, a); FillRect(x + w - t, y + t, t, h - 2 * t, r, g, b, a);
+        }
+
+        static Bitmap MakeText(string text, int px)
+        {
+            using (var font = new Font("Segoe UI Semibold", px, FontStyle.Regular, GraphicsUnit.Pixel))
+            {
+                SizeF size;
+                using (var tmp = new Bitmap(1, 1)) using (var g0 = Graphics.FromImage(tmp)) size = g0.MeasureString(text, font, 4000, StringFormat.GenericTypographic);
+                int w = Math.Max(4, (int)Math.Ceiling(size.Width) + 4), h = (int)Math.Ceiling(px * 1.35f);
+                var bmp = new Bitmap(w, h, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
+                using (var g = Graphics.FromImage(bmp))
+                {
+                    g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+                    g.DrawString(text, font, Brushes.White, 2f, px * 0.1f, StringFormat.GenericTypographic);
+                }
+                return bmp;
+            }
+        }
+
+        /// <summary>Width in pixels of a text.</summary>
+        public static float TextWidth(string text, int px)
+        {
+            if (string.IsNullOrEmpty(text)) return 0f;
+            var t = GetTex("T|" + px + "|" + text, () => MakeText(text, px));
+            return t.T.Description.Width;
+        }
+
+        /// <summary>align: 0 left, 1 centre, 2 right of x. y is the top of the line.</summary>
+        public static void DrawText(string text, float x, float y, int px, int r, int g, int b, int a, int align = 0)
+        {
+            if (string.IsNullOrEmpty(text)) return;
+            var t = GetTex("T|" + px + "|" + text, () => MakeText(text, px));
+            float w = t.T.Description.Width, h = t.T.Description.Height;
+            if (align == 1) x -= w / 2f; else if (align == 2) x -= w;
+            Quad2(t, x, y, w, h, 0, 0, 1, 1, r, g, b, a);
+        }
+
+        /// <summary>One of the game's own icons (a .dds file below the content folder); false when it cannot be loaded.</summary>
+        public static bool DrawIcon(string path, float x, float y, float w, float h, int a = 255)
+        {
+            var t = LoadDds(path);
+            if (t == null) return false;
+            Quad2(t, x, y, w, h, 0, 0, 1, 1, 255, 255, 255, a);
+            return true;
+        }
+
+        static Tex LoadDds(string rel)
+        {
+            if (string.IsNullOrEmpty(rel)) return null;
+            Tex res;
+            if (icons.TryGetValue(rel, out res)) return res;
+            res = null;
+            try
+            {
+                string p = rel;
+                if (!System.IO.Path.IsPathRooted(p)) p = System.IO.Path.Combine(VRage.FileSystem.MyFileSystem.ContentPath, rel);
+                if (System.IO.File.Exists(p) && dev != null)
+                {
+                    byte[] b = System.IO.File.ReadAllBytes(p);
+                    if (b.Length > 128 && b[0] == 'D' && b[1] == 'D' && b[2] == 'S')
+                    {
+                        int hgt = BitConverter.ToInt32(b, 12), wid = BitConverter.ToInt32(b, 16), mips = Math.Max(1, BitConverter.ToInt32(b, 28));
+                        string four = System.Text.Encoding.ASCII.GetString(b, 84, 4);
+                        int off = 128, block = 16; Format f = Format.Unknown;
+                        if (four == "DXT1") { f = Format.BC1_UNorm_SRgb; block = 8; }
+                        else if (four == "DXT5") f = Format.BC3_UNorm_SRgb;
+                        else if (four == "DXT3") f = Format.BC2_UNorm_SRgb;
+                        else if (four == "DX10")
+                        {
+                            int dx = BitConverter.ToInt32(b, 128); off = 148;
+                            if (dx == 98 || dx == 99) f = Format.BC7_UNorm_SRgb;
+                            else if (dx == 71 || dx == 72) { f = Format.BC1_UNorm_SRgb; block = 8; }
+                            else if (dx == 77 || dx == 78) f = Format.BC3_UNorm_SRgb;
+                        }
+                        if (f != Format.Unknown && wid % 4 == 0 && hgt % 4 == 0 && wid > 0 && hgt > 0)
+                        {
+                            var h = GCHandle.Alloc(b, GCHandleType.Pinned);
+                            try
+                            {
+                                var rects = new DataRectangle[mips];
+                                int mw = wid, mh = hgt, pos = off, used = 0;
+                                for (int m = 0; m < mips; m++)
+                                {
+                                    int bw = Math.Max(1, (mw + 3) / 4), bh = Math.Max(1, (mh + 3) / 4), size = bw * bh * block;
+                                    if (pos + size > b.Length) break;
+                                    rects[m] = new DataRectangle(h.AddrOfPinnedObject() + pos, bw * block);
+                                    pos += size; used++;
+                                    if (mw <= 4 && mh <= 4) break;     // block compressed levels below 4x4 are not valid sizes to upload separately
+                                    mw = Math.Max(1, mw / 2); mh = Math.Max(1, mh / 2);
+                                    if (mw % 4 != 0 || mh % 4 != 0) break;
+                                }
+                                if (used > 0)
+                                {
+                                    var rr = new DataRectangle[used]; Array.Copy(rects, rr, used);
+                                    var desc = new Texture2DDescription { Width = wid, Height = hgt, MipLevels = used, ArraySize = 1, Format = f, SampleDescription = new SampleDescription(1, 0), Usage = ResourceUsage.Immutable, BindFlags = BindFlags.ShaderResource };
+                                    var tex = new Texture2D(dev, desc, rr);
+                                    res = new Tex { T = tex, V = new ShaderResourceView(dev, tex), Aspect = (float)wid / hgt, Used = Environment.TickCount };
+                                }
+                            }
+                            finally { h.Free(); }
+                        }
+                    }
+                }
+            }
+            catch (Exception e) { Plugin.Log("icon " + rel + ": " + e.Message); }
+            icons[rel] = res;
+            return res;
+        }
+
         static void DrawHands(DeviceContext ctx, MatrixD view, Matrix proj, MatrixD? left, MatrixD? right, float trigL, float trigR)
         {
             ctx.InputAssembler.InputLayout = ilM;
@@ -364,3 +567,4 @@ float4 PS(PI i) : SV_Target { float3 n = normalize(i.nrm); float l = saturate(do
         }
     }
 }
+

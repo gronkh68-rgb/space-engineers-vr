@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Reflection;
 using HarmonyLib;
 using Sandbox.Game.Components;
@@ -18,6 +18,14 @@ namespace SeVr.Vr
         public static bool Enabled = Environment.GetEnvironmentVariable("SEVR_NOHANDIK") != "1";
         // palm frame relative to the controller's aim pose (calibrated against the rig's palm bone axes)
         public static Matrix PalmOffsetL = Matrix.CreateRotationY(-MathHelper.PiOver2), PalmOffsetR = Matrix.CreateRotationY(-MathHelper.PiOver2);
+
+        /// <summary>Turn the hands about the pointing direction: with 90 degrees the palms face each other, like hands holding the controllers.</summary>
+        public static void SetRoll(float degrees)
+        {
+            float r = MathHelper.ToRadians(degrees);
+            PalmOffsetL = Matrix.CreateRotationY(-MathHelper.PiOver2) * Matrix.CreateRotationZ(r);
+            PalmOffsetR = Matrix.CreateRotationY(-MathHelper.PiOver2) * Matrix.CreateRotationZ(-r);
+        }
         public static float ReachFraction = 1.12f;   // the hand may go 12 percent beyond the arm's length: arms look longer, hardly any rubber effect
         public static float ShoulderForward = float.Parse(Environment.GetEnvironmentVariable("SEVR_SHOULDER") ?? "0", System.Globalization.CultureInfo.InvariantCulture);   // share of the arm's full length the hand may be pulled to
         static MethodInfo calcIk;
@@ -60,7 +68,7 @@ namespace SeVr.Vr
             if (!Driving || !VrRenderer.Active || xr == null || !xr.HandRValid) return;
             var gun = ch.CurrentWeapon as VRage.Game.Entity.MyEntity;
             if (gun == null) return;
-            MatrixD hand = VrHead.EyeWorld(VrRenderer.PoseMatrix(xr.HandR), VrRenderer.CamWorld);
+            MatrixD hand = VrHead.EyeWorldUpd(VrRenderer.PoseMatrix(xr.HandR));
             MatrixD wm = MatrixD.CreateWorld(hand.Translation, hand.Forward, hand.Up);
             gun.WorldMatrix = wm;
             if (!weaponLogged) { weaponLogged = true; Plugin.Log("weapon: placed " + gun.GetType().Name + " in the right hand"); }
@@ -74,7 +82,7 @@ namespace SeVr.Vr
                 var xr = XrRuntime.Instance;
                 if (!Driving || !VrRenderer.Active || xr == null || !xr.HandRValid || s == null || __instance != s.LocalCharacter) return;
                 if (shootDirField == null) shootDirField = AccessTools.Field(typeof(MyCharacter), "ShootDirection");
-                MatrixD hand = VrHead.EyeWorld(VrRenderer.PoseMatrix(xr.HandR), VrRenderer.CamWorld);
+                MatrixD hand = VrHead.EyeWorldUpd(VrRenderer.PoseMatrix(xr.HandR));
                 shootDirField.SetValue(__instance, (Vector3)Vector3D.Normalize(hand.Forward));
             }
             catch (Exception e) { if (logCount++ < 5) Plugin.Log("shoot dir: " + e.Message); }
@@ -85,7 +93,7 @@ namespace SeVr.Vr
             var s = MySession.Static;
             var xr = XrRuntime.Instance;
             if (!Driving || !VrRenderer.Active || xr == null || !xr.HandRValid || s == null || __instance != s.LocalCharacter) return;
-            MatrixD hand = VrHead.EyeWorld(VrRenderer.PoseMatrix(xr.HandR), VrRenderer.CamWorld);
+            MatrixD hand = VrHead.EyeWorldUpd(VrRenderer.PoseMatrix(xr.HandR));
             __result = hand.Translation + Vector3D.Normalize(hand.Forward) * 200.0;
         }
 
@@ -101,7 +109,7 @@ namespace SeVr.Vr
             var s = MySession.Static;
             var xr = XrRuntime.Instance;
             if (!Driving || !VrRenderer.Active || xr == null || !xr.HandRValid || s == null || c.Character != s.LocalCharacter) return false;
-            hand = VrHead.EyeWorld(VrRenderer.PoseMatrix(xr.HandR), VrRenderer.CamWorld);
+            hand = VrHead.EyeWorldUpd(VrRenderer.PoseMatrix(xr.HandR));
             return true;
         }
 
@@ -138,8 +146,8 @@ namespace SeVr.Vr
                 if (s == null || __instance != s.LocalCharacter) return;
                 var xr = XrRuntime.Instance;
                 bool any = false;
-                if (xr.HandLValid) { Solve(__instance, lUp(__instance), lFore(__instance), lPalm(__instance), xr.HandL, PalmOffsetL); any = true; }
-                if (xr.HandRValid) { Solve(__instance, rUp(__instance), rFore(__instance), rPalm(__instance), xr.HandR, PalmOffsetR); any = true; }
+                if (xr.HandLValid) { Solve(__instance, lUp(__instance), lFore(__instance), lPalm(__instance), xr.BodyHandL, PalmOffsetL); any = true; }
+                if (xr.HandRValid) { Solve(__instance, rUp(__instance), rFore(__instance), rPalm(__instance), xr.BodyHandR, PalmOffsetR); any = true; }
                 PlaceWeapon(__instance);
                 if (any)
                 {
@@ -222,8 +230,11 @@ namespace SeVr.Vr
         static void Solve(MyCharacter c, int up, int fore, int palm, N.Pose pose, Matrix offset)
         {
             if (up < 0 || fore < 0 || palm < 0) return;
-            MatrixD world = VrHead.EyeWorld(VrRenderer.PoseMatrix(pose), VrRenderer.CamWorld);
+            MatrixD world = VrHead.EyeWorldUpd(VrRenderer.PoseMatrix(pose));
             MatrixD target = (MatrixD)offset * world;
+            // the hand model sits slightly ahead of the controller: pull it back along the pointing direction (HandBack, centimetres)
+            if (Plugin.Config.HandBack != 0f) target.Translation -= Vector3D.Normalize(world.Forward) * (Plugin.Config.HandBack * 0.01);
+            if (Plugin.Config.HandDown != 0f) target.Translation -= Vector3D.Normalize(c.PositionComp.WorldMatrixRef.Up) * (Plugin.Config.HandDown * 0.01);
             if (FloatingHands)
             {
                 var pb = c.AnimationController.CharacterBones;
@@ -253,3 +264,4 @@ namespace SeVr.Vr
         }
     }
 }
+

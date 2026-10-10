@@ -24,6 +24,11 @@ namespace SeVr.Vr
         public static float TurnRateDegPerSec = 150f;
         public static float PitchRateDegPerSec = 90f;
         public static float Gain = 0.35f;          // fraction of the remaining angle corrected per engine tick
+        const bool UseCamAge = false;
+        public static float CamAge;               // seconds since the game's camera of the last frame was set (set by the renderer)
+        static Vector3 EyeOffLocal, handOff;
+        static bool handOffInit;
+        static bool eyeOffLocalValid;
         static bool eyeOffInit, eyeBaseValid;
         static Vector3 eyeOff;
         static Vector3D EyeBase;
@@ -70,6 +75,11 @@ namespace SeVr.Vr
             OnFoot = true;
 
             MatrixD body = ch.PositionComp.WorldMatrixRef;
+            // The camera of the last frame is a little older than the body as it is now; on a moving grid that is a long way. Use the
+            // body where it was when the camera was set, otherwise every offset measured from it is dragged backwards.
+            Vector3D bodyPos = body.Translation;
+            // (switched off: the body only moves when the game updates, together with the camera, so this over-corrected and pushed hands and markers forward)
+            try { var ph = ch.Physics; if (ph != null && CamAge > 0f && UseCamAge) { Vector3D v = ph.LinearVelocity; if (Math.Abs(v.X) < 1e5 && Math.Abs(v.Y) < 1e5 && Math.Abs(v.Z) < 1e5) bodyPos -= v * CamAge; } } catch { }
             // A freshly spawned character (new world) can have an invalid orientation for a moment; anything computed from it
             // would be NaN, and NaN fed into the engine's rotation input ruins the character. Wait until everything is valid.
             if (!Valid((Vector3)body.Up) || !Valid((Vector3)body.Right) || !Valid((Vector3)body.Forward) || !Valid((Vector3)camWorld.Forward) || !Valid((Vector3)camWorld.Translation)
@@ -77,18 +87,42 @@ namespace SeVr.Vr
             { OnFoot = false; Inject = Vector2.Zero; baseInit = false; eyeOffInit = false; eyeBaseValid = false; return; }
             if (baseInit && !ValidM(BaseM)) baseInit = false;
 
+            // where the camera is, as a spot in the character's own frame (for hands and tools, see EyeWorldUpd)
+            {
+                Vector3 ol = (Vector3)Vector3D.TransformNormal(camWorld.Translation - bodyPos, MatrixD.Transpose(body.GetOrientation()));
+                if (Valid(ol))
+                {
+                    // measured every frame it is noisy (camera and body are read at slightly different moments, and the head bobs while walking):
+                    // the hands use a steadied value, otherwise they tremble relative to the view
+                    // The camera and the body are read at different moments (the camera is from the last frame the game sent). At speed that
+                    // makes the measured offset wrong by speed x delay, metres in a fast ship, and the hands would be pulled back by that much.
+                    // The real offset (head above the body) hardly ever changes, so it is only measured while the character is slow and
+                    // kept while it is fast.
+                    float speed = 0f;
+                    try { var ph = ch.Physics; if (ph != null) speed = ph.LinearVelocity.Length(); } catch { }
+                    if (!handOffInit || (ol - handOff).Length() > 0.5f && speed < 1.5f) { handOff = ol; handOffInit = true; }
+                    else if (speed < 1.5f)
+                    {
+                        if (Plugin.Config.HandSmooth <= 0.001f) handOff = ol;
+                        else handOff += (ol - handOff) * (1f - (float)Math.Exp(-dt / Plugin.Config.HandSmooth));
+                    }
+                    EyeOffLocal = handOff; eyeOffLocalValid = true;
+                }
+            }
+
             // The engine's camera sits on the animated head bone, which sways a little (turning, idle, footsteps) and shows up as a slight
             // tremble. Keep the eye point at the same place relative to the body, low-pass filtered, and use that instead.
             if (Plugin.Config.EyeSmooth > 0f)       // EyeSmooth=<seconds> in SeVr.cfg, off by default
             {
                 MatrixD ori = body.GetOrientation();
-                Vector3 offLocal = (Vector3)Vector3D.TransformNormal(camWorld.Translation - body.Translation, MatrixD.Transpose(ori));
+                Vector3 offLocal = (Vector3)Vector3D.TransformNormal(camWorld.Translation - bodyPos, MatrixD.Transpose(ori));
                 if (Valid(offLocal))
                 {
                     if (!eyeOffInit) { eyeOff = offLocal; eyeOffInit = true; }
                     else eyeOff += (offLocal - eyeOff) * (1f - (float)Math.Exp(-dt / Plugin.Config.EyeSmooth));
-                    EyeBase = body.Translation + Vector3D.TransformNormal((Vector3D)eyeOff, ori);
+                    EyeBase = bodyPos + Vector3D.TransformNormal((Vector3D)eyeOff, ori);
                     eyeBaseValid = true;
+                    EyeOffLocal = eyeOff;        // the hands use the same steady eye point, so they stay rigid to the head while walking
                 }
             }
             Vector3 U = Vector3.Normalize((Vector3)body.Up);
@@ -190,6 +224,53 @@ namespace SeVr.Vr
         }
 
         /// <summary>World matrix of an eye given its tracking-space pose.</summary>
+        /// <summary>
+        /// Same as EyeWorld, for code that runs in the game's update step (hands, tools, aiming). The camera position of the last rendered frame is
+        /// not used there: in a fast moving ship the character has moved on since, and the hands would trail behind. Instead the eye point is
+        /// taken as a fixed spot in the character's own frame, so it moves with the body.
+        /// </summary>
+        public static MatrixD EyeWorldUpd(Matrix eyeLocal)
+        {
+            var ch = OnFoot && eyeOffLocalValid ? FootCharacter() : null;
+            if (ch == null) return EyeWorld(eyeLocal, VrRenderer.CamWorld);
+            MatrixD body = ch.PositionComp.WorldMatrixRef;
+            Vector3D basePos = body.Translation + Vector3D.TransformNormal((Vector3D)EyeOffLocal, body.GetOrientation());
+            Matrix rot = eyeLocal; rot.Translation = Vector3.Zero;
+            Matrix w = rot * BaseM;
+            Vector3 off = Vector3.TransformNormal(eyeLocal.Translation - HeadRefPos, BaseM);
+            MatrixD m = (MatrixD)w;
+            m.Translation = basePos + (Vector3D)off;
+            // At speed the hands show up behind where they should be: the game draws the character a little ahead of where the update step
+            // put the target. Move the target forward by the speed times a small lead time (HandLead, milliseconds, in the settings).
+            float lead = Plugin.Config.HandLead * 0.001f;
+            if (lead > 0f)
+            {
+                try
+                {
+                    var ph = ch.Physics;
+                    if (ph != null) { Vector3 v = ph.LinearVelocity; if (Valid(v) && v.LengthSquared() < 1e8f) m.Translation += (Vector3D)v * lead; }
+                }
+                catch { }
+            }
+            return m;
+        }
+
+        /// <summary>The other way round: where a world pose is in the tracking space right now.</summary>
+        public static Matrix LocalFromWorld(MatrixD world, MatrixD camWorld)
+        {
+            if (!OnFoot)
+            {
+                Matrix loc = (Matrix)(world * MatrixD.Invert(camWorld));
+                loc.Translation += HeadRefPos;
+                return loc;
+            }
+            Matrix bt = Matrix.Transpose(BaseM);
+            Matrix rot = (Matrix)world; rot.Translation = Vector3.Zero;
+            rot = rot * bt;
+            rot.Translation = HeadRefPos + Vector3.TransformNormal((Vector3)(world.Translation - camWorld.Translation), bt);
+            return rot;
+        }
+
         public static MatrixD EyeWorld(Matrix eyeLocal, MatrixD camWorld)
         {
             if (!OnFoot)

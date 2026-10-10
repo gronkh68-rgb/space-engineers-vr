@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using SeVr.Generated;
@@ -35,9 +35,44 @@ namespace SeVr.Xr
         ulong actionSet;
         readonly Dictionary<string, ulong> actions = new Dictionary<string, ulong>();
         readonly Dictionary<string, string> actionTypes = new Dictionary<string, string>();
-        ulong handSpaceL, handSpaceR, aimActionL, aimActionR;
+        ulong handSpaceL, handSpaceR, aimActionL, aimActionR, hapticL, hapticR;
+        public string ActiveProfile = "";    // interaction profile the runtime is using for the controllers
+        int profileCheck;
+
+        /// <summary>True for the Steam Frame controllers (D-pad, bumpers, X/Y on the right). With Touch-style controllers the sticks stand in for the D-pad.</summary>
+        public bool IsFrameController { get { var c = Plugin.Config.Controller; if (c == "frame") return true; if (c == "touch") return false; return ActiveProfile.Length > 0 ? ActiveProfile.Contains("frame_controller") : FrameProfile; } }
+
+        /// <summary>A short vibration of one controller (render thread).</summary>
+        public void Haptic(bool left, float seconds, float amplitude)
+        {
+            ulong a = left ? hapticL : hapticR;
+            if (a == 0 || session == 0 || Fake || !SessionRunning) return;
+            var info = new N.HapticActionInfo { type = N.T.HapticActionInfo, action = a };
+            var vib = new N.HapticVibration { type = N.T.HapticVibration, duration = (long)(seconds * 1e9), frequency = 0f, amplitude = amplitude };
+            N.xrApplyHapticFeedback(session, ref info, ref vib);
+        }
+
+        void CheckProfile()
+        {
+            if (session == 0 || (profileCheck++ % 120) != 0) return;
+            var st = new N.InteractionProfileState { type = (N.T)53 };
+            if (N.xrGetCurrentInteractionProfile(session, Path("/user/hand/right"), ref st) != N.XR_SUCCESS || st.interactionProfile == 0) return;
+            byte* buf = stackalloc byte[256];
+            if (N.xrPathToString(instance, st.interactionProfile, 256, out uint n, buf) != N.XR_SUCCESS) return;
+            string s = System.Text.Encoding.ASCII.GetString(buf, (int)Math.Max(0, n - 1));
+            if (s != ActiveProfile) { ActiveProfile = s; Plugin.Log("XR: controller profile " + s); }
+        }
         public N.Pose HandL, HandR;
         public bool HandLValid, HandRValid;
+
+        // grip pose = where the real hand holds the controller (the aim pose is at the front, for pointing)
+        ulong gripActionL, gripActionR, gripSpaceL, gripSpaceR;
+        public N.Pose GripPoseL, GripPoseR;
+        public bool GripLValid, GripRValid;
+
+        /// <summary>Pose for the character's hands: the aim orientation (calibrated for the hand model) at the position of the real hand.</summary>
+        public N.Pose BodyHandL { get { var p = HandL; if (Plugin.Config.HandsAtGrip && GripLValid) p.position = GripPoseL.position; return p; } }
+        public N.Pose BodyHandR { get { var p = HandR; if (Plugin.Config.HandsAtGrip && GripRValid) p.position = GripPoseR.position; return p; } }
         public readonly VirtualPad Pad = new VirtualPad();
 
         long lastInputTicks; float fakeT;
@@ -167,6 +202,10 @@ namespace SeVr.Xr
             }
             aimActionL = NewAction("aim_left", 4, "Aim left");
             aimActionR = NewAction("aim_right", 4, "Aim right");
+            gripActionL = NewAction("grip_pose_left", 4, "Grip left");
+            gripActionR = NewAction("grip_pose_right", 4, "Grip right");
+            hapticL = NewAction("haptic_left", 100, "Haptic left");     // 100 = vibration output
+            hapticR = NewAction("haptic_right", 100, "Haptic right");
 
             string[] profiles = {
                 "oculus/touch_controller", "meta/touch_controller_plus", "meta/touch_controller_pro", "bytedance/pico4_controller",
@@ -182,6 +221,26 @@ namespace SeVr.Xr
                 }
                 list.Add(new N.ActionSuggestedBinding { action = aimActionL, binding = Path("/user/hand/left/input/aim/pose") });
                 list.Add(new N.ActionSuggestedBinding { action = aimActionR, binding = Path("/user/hand/right/input/aim/pose") });
+                if (profile != "valve/frame_controller_valve" && gripActionL != 0 && gripActionR != 0)
+                {
+                    list.Add(new N.ActionSuggestedBinding { action = gripActionL, binding = Path("/user/hand/left/input/grip/pose") });
+                    list.Add(new N.ActionSuggestedBinding { action = gripActionR, binding = Path("/user/hand/right/input/grip/pose") });
+                }
+                if (hapticL != 0 && hapticR != 0)
+                {
+                    var withHaptic = new List<N.ActionSuggestedBinding>(list);
+                    withHaptic.Add(new N.ActionSuggestedBinding { action = hapticL, binding = Path("/user/hand/left/output/haptic") });
+                    withHaptic.Add(new N.ActionSuggestedBinding { action = hapticR, binding = Path("/user/hand/right/output/haptic") });
+                    if (profile == "valve/frame_controller_valve")
+                    {
+                        // not sure the Frame profile has this output path: try it, and fall back to the old bindings if the runtime refuses
+                        int sr = Suggest("/interaction_profiles/" + profile, withHaptic);
+                        Plugin.Log("XR: Steam Frame haptic binding " + (sr == N.XR_SUCCESS ? "accepted" : "refused (" + sr + ")"));
+                        if (sr != N.XR_SUCCESS) Suggest("/interaction_profiles/" + profile, list);
+                        continue;
+                    }
+                    list = withHaptic;
+                }
                 Suggest("/interaction_profiles/" + profile, list);
             }
 
@@ -195,6 +254,11 @@ namespace SeVr.Xr
             N.xrCreateActionSpace(session, ref sp, out handSpaceL);
             sp.action = aimActionR;
             N.xrCreateActionSpace(session, ref sp, out handSpaceR);
+            if (gripActionL != 0 && gripActionR != 0)
+            {
+                sp.action = gripActionL; N.xrCreateActionSpace(session, ref sp, out gripSpaceL);
+                sp.action = gripActionR; N.xrCreateActionSpace(session, ref sp, out gripSpaceR);
+            }
             return true;
         }
 
@@ -240,9 +304,9 @@ namespace SeVr.Xr
             return N.xrCreateAction(actionSet, ref ai, out ulong a) == N.XR_SUCCESS ? a : 0;
         }
 
-        void Suggest(string profile, List<N.ActionSuggestedBinding> b)
+        int Suggest(string profile, List<N.ActionSuggestedBinding> b)
         {
-            if (b.Count == 0) return;
+            if (b.Count == 0) return N.XR_SUCCESS;
             var arr = b.ToArray();
             fixed (N.ActionSuggestedBinding* p = arr)
             {
@@ -253,7 +317,7 @@ namespace SeVr.Xr
                     countSuggestedBindings = (uint)arr.Length,
                     suggestedBindings = p
                 };
-                N.xrSuggestInteractionProfileBindings(instance, ref s);
+                return N.xrSuggestInteractionProfileBindings(instance, ref s);
             }
         }
 
@@ -361,15 +425,21 @@ namespace SeVr.Xr
                 }
             }
 
-            long nowTicks = System.Diagnostics.Stopwatch.GetTimestamp();
-            float dtInput = lastInputTicks == 0 ? 0.011f : (float)(nowTicks - lastInputTicks) / System.Diagnostics.Stopwatch.Frequency;
-            lastInputTicks = nowTicks;
-            VrControls.EndFrameInput(Math.Min(dtInput, 0.1f));
-
+            // hands first: the body zones in EndFrameInput need this frame's hand positions
             var loc = new N.SpaceLocation { type = N.T.SpaceLocation };
             if (handSpaceL != 0 && N.xrLocateSpace(handSpaceL, localSpace, DisplayTime, ref loc) == 0 && (loc.locationFlags & 3) == 3) { HandL = loc.pose; HandLValid = true; } else HandLValid = false;
             loc = new N.SpaceLocation { type = N.T.SpaceLocation };
             if (handSpaceR != 0 && N.xrLocateSpace(handSpaceR, localSpace, DisplayTime, ref loc) == 0 && (loc.locationFlags & 3) == 3) { HandR = loc.pose; HandRValid = true; } else HandRValid = false;
+            loc = new N.SpaceLocation { type = N.T.SpaceLocation };
+            if (gripSpaceL != 0 && N.xrLocateSpace(gripSpaceL, localSpace, DisplayTime, ref loc) == 0 && (loc.locationFlags & 3) == 3) { GripPoseL = loc.pose; GripLValid = true; } else GripLValid = false;
+            loc = new N.SpaceLocation { type = N.T.SpaceLocation };
+            if (gripSpaceR != 0 && N.xrLocateSpace(gripSpaceR, localSpace, DisplayTime, ref loc) == 0 && (loc.locationFlags & 3) == 3) { GripPoseR = loc.pose; GripRValid = true; } else GripRValid = false;
+            CheckProfile();
+
+            long nowTicks = System.Diagnostics.Stopwatch.GetTimestamp();
+            float dtInput = lastInputTicks == 0 ? 0.011f : (float)(nowTicks - lastInputTicks) / System.Diagnostics.Stopwatch.Frequency;
+            lastInputTicks = nowTicks;
+            VrControls.EndFrameInput(Math.Min(dtInput, 0.1f));
         }
 
 
@@ -380,6 +450,171 @@ namespace SeVr.Xr
         public float HudWidthDeg = 62f, HudYOffset = 0f;
         float HudSizeMeters() { return 2f * HudDistance * (float)Math.Tan(HudWidthDeg * 0.5f * 0.017453292f); }
         public bool HudReady;                 // set by the renderer when this frame has a HUD image
+
+        // HUD parts shown on the body instead of in the flat HUD window. Each is cut out of the HUD image by the renderer and floats at its
+        // own anchor: next to a hand (stacked above each other when several share a hand), at the belt, or on the chest.
+        // part: 0 block info head, 1 component list, 2 hotbar, 3 status bars, 4 gravity and warnings, 5 chat
+        public const float HudDepth = 30f;      // metres: distance of the HUD picture (markers sit in about the right direction for both eyes)
+        public bool HudLocked;                  // the HUD picture stays where the head was when it was drawn
+        public N.Pose HudLockedPose;            // that head pose (tracking space)
+        public float HudTanX = 1f, HudTanY = 1f;
+        public const int PartCount = 10;        // 0 info, 1 components, 5 chat, 6 crosshair (always head-locked), 2 3 4 7 8 9: the pieces found in the rest of the HUD
+        public const int PanelW = 1536, PanelH = 1024;
+        sealed class PanelImg { public ulong Sc; public IntPtr[] Images = new IntPtr[0]; public bool Ready; public int W, H; public string Anchor = "hud"; public float WidthM = 0.26f; public bool Premult; }
+        readonly PanelImg[] panels = MakePanels();
+        static PanelImg[] MakePanels() { var a = new PanelImg[PartCount]; for (int i = 0; i < PartCount; i++) a[i] = new PanelImg(); return a; }
+        public static readonly int[] ClusterSlots = { 3, 2, 4, 7, 8, 9 };      // the pieces of the HUD, from left to right
+        static readonly int[] RowOrder = { 7, 0, 1, 3, 4, 5, 8, 9, 2 };      // left to right in a bottom row
+        // 0 status, indicators and chat (under the tool bar), 1 tool bar, 2 block info and components, 3 notifications
+        static int RowOf(int part) { return part == 2 ? 1 : (part == 0 || part == 1) ? 2 : part == 7 ? 3 : part == 5 ? 5 : 0; }      // 5: the chat, placed on its own
+        static readonly int[] StackOrder = { 3, 4, 7, 8, 9, 0, 1, 5, 2 };     // bottom to top when several parts share a hand
+
+        public bool EnsurePanelSwapchain(int part, int backbufferDxgiFormat, out string error)
+        {
+            error = null;
+            var p = panels[part];
+            if (p.Sc != 0) return true;
+            long chosen = PickFormat(backbufferDxgiFormat);
+            if (chosen == 0) { error = "No compatible panel swapchain format"; return false; }
+            if (!CreateSc((uint)PanelW, (uint)PanelH, chosen, out p.Sc, out p.Images, out error)) return false;
+            Plugin.Log("XR: panel swapchain " + part + " " + PanelW + "x" + PanelH);
+            return true;
+        }
+        public IntPtr AcquirePanel(int part) { return Acquire(panels[part].Sc, panels[part].Images); }
+        public void ReleasePanel(int part) { Release(panels[part].Sc); }
+        public void SetPanel(int part, int w, int h, string anchor, float widthMeters, bool premultiplied = false) { var p = panels[part]; p.W = w; p.H = h; p.Anchor = anchor; p.WidthM = widthMeters; p.Premult = premultiplied; p.Ready = true; }
+
+        // which hand an anchor means (the other one when that hand is not tracked); false for body anchors
+        bool AnchorHand(string anchor, out bool left)
+        {
+            left = anchor != "rhand";
+            if (anchor != "lhand" && anchor != "rhand") return false;
+            bool ok = left ? HandLValid : HandRValid;
+            if (!ok) { left = !left; ok = left ? HandLValid : HandRValid; }
+            return ok;
+        }
+
+        float PartHeight(PanelImg p) { return p.H * (p.WidthM / Math.Max(1, p.W)); }
+
+        /// <summary>Orientation of the head: the two eyes' orientations averaged (displays can be turned outwards a little, one eye alone is not straight ahead).</summary>
+        public N.Quat HeadOrientation()
+        {
+            var a = Views[0].pose.orientation; var b = Views[1].pose.orientation;
+            float dot = a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w;
+            float s = dot < 0f ? -1f : 1f;
+            var q = new N.Quat { x = a.x + b.x * s, y = a.y + b.y * s, z = a.z + b.z * s, w = a.w + b.w * s };
+            float l = (float)Math.Sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
+            if (l < 1e-6f) return a;
+            q.x /= l; q.y /= l; q.z /= l; q.w /= l;
+            return q;
+        }
+
+        /// <summary>Head position and the yaw-only frame of where it looks (right, forward), in tracking space.</summary>
+        void BodyFrame(out N.Vec3 head, out N.Vec3 right, out N.Vec3 fwd)
+        {
+            head = Mul3(Add3(Views[0].pose.position, Views[1].pose.position), 0.5f);
+            var f = Rotate(HeadOrientation(), new N.Vec3 { z = -1f });
+            float yaw = (float)Math.Atan2(f.x, -f.z);
+            if (f.x * f.x + f.z * f.z < 0.09f) yaw = lastBodyYaw; else lastBodyYaw = yaw;
+            yaw -= Plugin.Config.HudYaw * 0.017453292f;      // HudYaw: degrees, positive turns the whole HUD to the left
+            float sy = (float)Math.Sin(yaw), cy = (float)Math.Cos(yaw);
+            right = new N.Vec3 { x = cy, z = sy };
+            fwd = new N.Vec3 { x = sy, z = -cy };
+        }
+        float lastBodyYaw;
+
+        /// <summary>Pose of a part: near its hand (turned towards the head) or fixed on the body.</summary>
+        bool BuildPartPose(int part, out N.Pose pose)
+        {
+            pose = new N.Pose();
+            var me = panels[part];
+            float hm = PartHeight(me);
+            N.Vec3 head = Mul3(Add3(Views[0].pose.position, Views[1].pose.position), 0.5f);
+            N.Vec3 pos;
+            bool left;
+            if (me.Anchor == "view")
+            {
+                // head-locked, straight ahead (the crosshair)
+                var hq = HeadOrientation();
+                var fv = Rotate(hq, new N.Vec3 { z = -1f });
+                float yo = Plugin.Config.HudYaw * 0.017453292f;
+                if (yo != 0f)
+                {
+                    float cy0 = (float)Math.Cos(yo), sy0 = (float)Math.Sin(yo);
+                    fv = new N.Vec3 { x = fv.x * cy0 + fv.z * sy0, y = fv.y, z = -fv.x * sy0 + fv.z * cy0 };
+                }
+                pose = new N.Pose { orientation = hq, position = Add3(head, Mul3(fv, HudDepth)) };
+                return true;
+            }
+            if (AnchorHand(me.Anchor, out left))
+            {
+                float up = 0.07f;
+                foreach (int i in StackOrder)
+                {
+                    if (i == part) break;
+                    var o = panels[i];
+                    bool ol;
+                    if (!o.Ready || o.Sc == 0 || !AnchorHand(o.Anchor, out ol) || ol != left) continue;
+                    up += PartHeight(o) + 0.01f;
+                }
+                up += hm / 2f;
+                N.Vec3 hp = left ? BodyHandL.position : BodyHandR.position;
+                N.Vec3 toHead = Sub3(head, hp); toHead.y = 0f;
+                float l = Len3(toHead);
+                toHead = l > 1e-3f ? Mul3(toHead, 1f / l) : new N.Vec3 { z = 1f };
+                pos = Add3(Add3(hp, new N.Vec3 { y = up }), Mul3(toHead, 0.07f));
+            }
+            else if (me.Anchor == "bottom" || me.Anchor == "bottom2")
+            {
+                // three rows of panels on a circle below the view, each row centred as a group (the tool bar alone in the lowest, then status
+                // and indicators, then block info, components and chat), left to right in the order of RowOrder
+                N.Vec3 h, right, fwd;
+                BodyFrame(out h, out right, out fwd);
+                // HudDistance: how far away the HUD floats; positions and panel sizes grow with it, so everything keeps its apparent size and place
+                float R = Math.Max(0.5f, Plugin.Config.HudDistance), fs = R / 0.72f;
+                const float gap = 0.03f;
+                if (part == 5)
+                {
+                    // the chat: upper left of the view, its right edge about 9 degrees to the left, its bottom edge at eye level (it grows upwards)
+                    float ac = -(0.16f + me.WidthM / R * 0.5f);
+                    float cy = 0.0f + hm / 2f;
+                    pos = Add3(Add3(h, Mul3(right, (float)Math.Sin(ac) * R)), Add3(new N.Vec3 { y = cy }, Mul3(fwd, (float)Math.Cos(ac) * R)));
+                    goto placed;
+                }
+                int myRow = RowOf(part);
+                float total = 0f, start = 0f;
+                bool found = false;
+                foreach (int i in RowOrder)
+                {
+                    var o = panels[i];
+                    if (!o.Ready || o.Sc == 0 || RowOf(i) != myRow || !(o.Anchor == "bottom" || o.Anchor == "bottom2")) continue;
+                    if (i == part) { found = true; start = total; }
+                    total += o.WidthM / R + gap;
+                }
+                if (!found) return false;
+                float a = -(total - gap) * 0.5f + start + me.WidthM / R * 0.5f;
+                float rowBottom = (myRow == 0 ? -0.95f : myRow == 1 ? -0.67f : myRow == 2 ? -0.45f : -0.18f) * fs;
+                float rowY = rowBottom + hm / 2f;                              // rows sit on their bottom edge, tall panels grow upwards
+                pos = Add3(Add3(h, Mul3(right, (float)Math.Sin(a) * R)), Add3(new N.Vec3 { y = rowY }, Mul3(fwd, (float)Math.Cos(a) * R)));
+            }
+            else
+            {
+                N.Vec3 h, right, fwd;
+                BodyFrame(out h, out right, out fwd);
+                float ox = 0f, oy = -0.55f, oz = 0.30f;                   // belt
+                if (me.Anchor == "chestl") { ox = -0.20f; oy = -0.30f; oz = 0.36f; }
+                else if (me.Anchor == "chestr") { ox = 0.20f; oy = -0.30f; oz = 0.36f; }
+                pos = Add3(Add3(h, Mul3(right, ox)), Add3(new N.Vec3 { y = oy }, Mul3(fwd, oz)));
+            }
+        placed:
+            N.Vec3 z = Sub3(head, pos); float zl = Len3(z); if (zl < 1e-3f) return false;
+            z = Mul3(z, 1f / zl);
+            N.Vec3 x = Cross3(new N.Vec3 { y = 1f }, z); float xl = Len3(x); if (xl < 1e-3f) return false;
+            x = Mul3(x, 1f / xl);
+            N.Vec3 y = Cross3(z, x);
+            pose = new N.Pose { orientation = FromBasis(x, y, z), position = pos };
+            return true;
+        }
         public float HudWidthMeters, HudHeightMeters, HudDistance = 1.5f;
 
         long PickFormat(int backbufferDxgiFormat)
@@ -486,7 +721,8 @@ namespace SeVr.Xr
                 return;
             }
 
-            void** layers = stackalloc void*[3];
+            void** layers = stackalloc void*[20];
+            N.CompositionLayerQuad* pq = stackalloc N.CompositionLayerQuad[PartCount];
             N.CompositionLayerProjectionView* pv = stackalloc N.CompositionLayerProjectionView[2];
             N.CompositionLayerProjection proj = new N.CompositionLayerProjection();
             N.CompositionLayerQuad quad = new N.CompositionLayerQuad();
@@ -524,17 +760,48 @@ namespace SeVr.Xr
                     }
                     else
                     {
-                        // head-locked HUD (crosshair in the middle, bars at the bottom); GPS markers are drawn in the world instead
-                        hud = new N.CompositionLayerQuad
+                        if (HudLocked)
                         {
-                            type = N.T.CompositionLayerQuad, layerFlags = 2 | 4, space = viewSpace != 0 ? viewSpace : localSpace, eyeVisibility = 0,
-                            subImage = Sub(hudSwapchain, 0, (int)hudW, (int)hudH),
-                            pose = new N.Pose { orientation = new N.Quat { w = 1f }, position = new N.Vec3 { x = 0, y = HudYOffset, z = -HudDistance } },
-                            size = new N.Extent2Df { width = HudSizeMeters(), height = HudSizeMeters() }
-                        };
+                            // The rest of the HUD (what is not a marker and not a body part): a picture in front of the head, far away, covering the
+                            // field of view the HUD was drawn for.
+                            hud = new N.CompositionLayerQuad
+                            {
+                                type = N.T.CompositionLayerQuad, layerFlags = 2 | 4, space = viewSpace != 0 ? viewSpace : localSpace, eyeVisibility = 0,
+                                subImage = Sub(hudSwapchain, 0, (int)hudW, (int)hudH),
+                                pose = new N.Pose { orientation = new N.Quat { w = 1f }, position = new N.Vec3 { x = 0, y = 0, z = -HudDepth } },
+                                size = new N.Extent2Df { width = 2f * HudDepth * HudTanX, height = 2f * HudDepth * HudTanY }
+                            };
+                        }
+                        else
+                        {
+                            // head-locked HUD window (no marker data yet)
+                            hud = new N.CompositionLayerQuad
+                            {
+                                type = N.T.CompositionLayerQuad, layerFlags = 2 | 4, space = viewSpace != 0 ? viewSpace : localSpace, eyeVisibility = 0,
+                                subImage = Sub(hudSwapchain, 0, (int)hudW, (int)hudH),
+                                pose = new N.Pose { orientation = new N.Quat { w = 1f }, position = new N.Vec3 { x = 0, y = HudYOffset, z = -HudDistance } },
+                                size = new N.Extent2Df { width = HudSizeMeters(), height = HudSizeMeters() }
+                            };
+                        }
                         layers[n++] = &hud;
+
+                        for (int part = 0; part < PartCount; part++)
+                        {
+                            var pn = panels[part];
+                            N.Pose pp;
+                            if (!pn.Ready || pn.Sc == 0 || pn.W <= 0 || pn.H <= 0 || !BuildPartPose(part, out pp)) continue;
+                            pq[part] = new N.CompositionLayerQuad
+                            {
+                                type = N.T.CompositionLayerQuad, layerFlags = pn.Premult ? 2UL : 6UL, space = localSpace, eyeVisibility = 0,
+                                subImage = Sub(pn.Sc, 0, pn.W, pn.H),
+                                pose = pp,
+                                size = new N.Extent2Df { width = pn.WidthM, height = PartHeight(pn) }
+                            };
+                            layers[n++] = &pq[part];
+                        }
                     }
                 }
+                for (int part = 0; part < PartCount; part++) panels[part].Ready = false;
                 fe.layerCount = n; fe.layers = layers;
                 LogEnd(N.xrEndFrame(session, ref fe));
             }
@@ -702,3 +969,7 @@ namespace SeVr.Xr
         }
     }
 }
+
+
+
+
