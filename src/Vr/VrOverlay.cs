@@ -196,7 +196,6 @@ float4 PS(PI i) : SV_Target { float3 n = normalize(i.nrm); float l = saturate(do
                 using (var ring = new Pen(Color.FromArgb(255, c.R, c.G, c.B), 7f)) g.DrawEllipse(ring, 18, 18, 60, 60);
                 using (var dot = new SolidBrush(Color.FromArgb(255, c.R, c.G, c.B))) g.FillEllipse(dot, 38, 38, 20, 20);
             }
-            try { bmp.Save(System.IO.Path.Combine(System.IO.Path.GetTempPath(), "SeVr_icon_" + c.ToArgb() + ".png"), System.Drawing.Imaging.ImageFormat.Png); } catch { }
             return bmp;
         }
 
@@ -364,11 +363,60 @@ float4 PS(PI i) : SV_Target { float3 n = normalize(i.nrm); float l = saturate(do
             }
         }
 
+        /// <summary>A panel as it is drawn in the desktop mirror: its picture and its four corners in the world (top left, top right, bottom right, bottom left).</summary>
+        public sealed class MirrorQuad { public ShaderResourceView View; public Vector3D[] Corners = new Vector3D[4]; public double Dist; }
+
+        /// <summary>The panels drawn into the desktop window as they are placed in the world, seen through one eye (far ones first).</summary>
+        public static void DrawPanelQuads(Device device, DeviceContext ctx, RenderTargetView rtv, int width, int height, MatrixD eyeWorld, Matrix proj, List<MirrorQuad> quads)
+        {
+            if (quads == null || quads.Count == 0 || !Init(device)) return;
+            try
+            {
+                MatrixD view = MatrixD.Invert(eyeWorld);
+                ctx.OutputMerger.SetRenderTargets((DepthStencilView)null, rtv);
+                ctx.Rasterizer.SetViewport(0f, 0f, width, height, 0f, 1f);
+                ctx.Rasterizer.State = raster;
+                ctx.OutputMerger.SetDepthStencilState(noDepth);
+                ctx.OutputMerger.SetBlendState(blend, new SharpDX.Mathematics.Interop.RawColor4(0, 0, 0, 0), -1);
+                ctx.InputAssembler.PrimitiveTopology = SharpDX.Direct3D.PrimitiveTopology.TriangleList;
+                ctx.InputAssembler.InputLayout = ilB;
+                ctx.VertexShader.Set(vsB); ctx.PixelShader.Set(psB);
+                ctx.VertexShader.SetConstantBuffer(0, cbB);
+                ctx.PixelShader.SetSampler(0, sampler);
+                DataStream ds;
+                ctx.MapSubresource(cbB, MapMode.WriteDiscard, SharpDX.Direct3D11.MapFlags.None, out ds);
+                ds.WriteRange(new[] { proj.M11, proj.M12, proj.M13, proj.M14, proj.M21, proj.M22, proj.M23, proj.M24, proj.M31, proj.M32, proj.M33, proj.M34, proj.M41, proj.M42, proj.M43, proj.M44 });
+                ctx.UnmapSubresource(cbB, 0);
+                quads.Sort((a, b) => b.Dist.CompareTo(a.Dist));
+                foreach (var q in quads)
+                {
+                    var p = new Vector3[4];
+                    bool front = true;
+                    for (int i = 0; i < 4; i++) { var v = Vector3D.Transform(q.Corners[i], view); p[i] = (Vector3)v; if (v.Z > -0.05) front = false; }
+                    if (!front) continue;                                  // (partly) behind the viewer
+                    var list = new List<BV>(6);
+                    Action<int, float, float> V = (i, u, vv) => list.Add(new BV { x = p[i].X, y = p[i].Y, z = p[i].Z, u = u, v = vv, r = 1, g = 1, b = 1, a = 1 });
+                    V(0, 0, 0); V(1, 1, 0); V(2, 1, 1);
+                    V(0, 0, 0); V(2, 1, 1); V(3, 0, 1);
+                    ctx.MapSubresource(vbB, MapMode.WriteDiscard, SharpDX.Direct3D11.MapFlags.None, out ds);
+                    ds.WriteRange(list.ToArray());
+                    ctx.UnmapSubresource(vbB, 0);
+                    ctx.InputAssembler.SetVertexBuffers(0, new VertexBufferBinding(vbB, 36, 0));
+                    ctx.PixelShader.SetShaderResource(0, q.View);
+                    ctx.Draw(6, 0);
+                }
+                ctx.OutputMerger.SetRenderTargets((DepthStencilView)null, (RenderTargetView)null);
+            }
+            catch (Exception e) { Plugin.Log("mirror panels: " + e.Message); }
+        }
+
         // ------------------------------------------------------------------ 2D drawing for the own HUD panels (pixel coordinates, origin top left)
 
         static DeviceContext c2; static int w2, h2; static bool srgb2;
         /// <summary>Everything drawn for the own HUD panels is multiplied by this (the HUD opacity setting).</summary>
         public static float Opacity = 1f;
+        /// <summary>Set before Begin2D for one panel: fades it (wrist panels fade out when you do not look at them).</summary>
+        public static float OpacityMul = 1f;
         static readonly Dictionary<string, Tex> icons = new Dictionary<string, Tex>();
 
         /// <summary>Start drawing into a panel image. Straight pixel coordinates; colours are given as sRGB bytes.</summary>
@@ -378,7 +426,7 @@ float4 PS(PI i) : SV_Target { float3 n = normalize(i.nrm); float l = saturate(do
             try
             {
                 c2 = ctx; w2 = width; h2 = height; srgb2 = srgbTarget;
-                Opacity = Math.Max(0.15f, Math.Min(1f, Plugin.Config.HudOpacity));
+                Opacity = Math.Max(0.15f, Math.Min(1f, Plugin.Config.HudOpacity)) * Math.Max(0f, Math.Min(1f, OpacityMul));
                 ctx.ClearRenderTargetView(rtv, new SharpDX.Mathematics.Interop.RawColor4(0f, 0f, 0f, 0f));
                 ctx.OutputMerger.SetRenderTargets((DepthStencilView)null, rtv);
                 ctx.Rasterizer.SetViewport(0f, 0f, width, height, 0f, 1f);
@@ -405,17 +453,27 @@ float4 PS(PI i) : SV_Target { float3 n = normalize(i.nrm); float l = saturate(do
             c2 = null;
         }
 
-        static float Lin(int v) { float f = v / 255f; return srgb2 ? (float)Math.Pow(f, 2.2) : f; }
+        static readonly float[] linLut = BuildLut();
+        static float[] BuildLut() { var t = new float[256]; for (int i = 0; i < 256; i++) t[i] = (float)Math.Pow(i / 255.0, 2.2); return t; }
+        static float Lin(int v) { v = v < 0 ? 0 : v > 255 ? 255 : v; return srgb2 ? linLut[v] : v / 255f; }
+
+        static readonly BV[] quad6 = new BV[6];        // reused: a panel is hundreds of quads, none of them should allocate
 
         static void Quad2(Tex tex, float x, float y, float w, float h, float u0, float v0, float u1, float v1, int r, int g, int b, int a)
         {
             if (c2 == null || tex == null || w <= 0f || h <= 0f) return;
             float cx = (x + w / 2f) / w2 * 2f - 1f, cy = 1f - (y + h / 2f) / h2 * 2f;
-            var list = new List<BV>(6);
-            WriteBill(list, new Vector3(cx, cy, 0.5f), w / w2, h / h2, u0, v0, u1, v1, Lin(r), Lin(g), Lin(b), a / 255f * Opacity);
+            float hw = w / w2, hh = h / h2, rr = Lin(r), gg = Lin(g), bb = Lin(b), aa = a / 255f * Opacity;
+            // top left, top right, bottom right, top left, bottom right, bottom left
+            quad6[0] = new BV { x = cx - hw, y = cy + hh, z = 0.5f, u = u0, v = v0, r = rr, g = gg, b = bb, a = aa };
+            quad6[1] = new BV { x = cx + hw, y = cy + hh, z = 0.5f, u = u1, v = v0, r = rr, g = gg, b = bb, a = aa };
+            quad6[2] = new BV { x = cx + hw, y = cy - hh, z = 0.5f, u = u1, v = v1, r = rr, g = gg, b = bb, a = aa };
+            quad6[3] = quad6[0];
+            quad6[4] = quad6[2];
+            quad6[5] = new BV { x = cx - hw, y = cy - hh, z = 0.5f, u = u0, v = v1, r = rr, g = gg, b = bb, a = aa };
             DataStream ds;
             c2.MapSubresource(vbB, MapMode.WriteDiscard, SharpDX.Direct3D11.MapFlags.None, out ds);
-            ds.WriteRange(list.ToArray());
+            ds.WriteRange(quad6, 0, 6);
             c2.UnmapSubresource(vbB, 0);
             c2.InputAssembler.SetVertexBuffers(0, new VertexBufferBinding(vbB, 36, 0));
             c2.PixelShader.SetShaderResource(0, tex.V);
@@ -477,6 +535,21 @@ float4 PS(PI i) : SV_Target { float3 n = normalize(i.nrm); float l = saturate(do
             return true;
         }
 
+        static int missingLog;
+
+        /// <summary>A file through the game's file system (also inside mod packages), else straight from the disk.</summary>
+        static byte[] ReadAllBytes(string path)
+        {
+            try
+            {
+                using (var st = VRage.FileSystem.MyFileSystem.OpenRead(path))
+                    if (st != null) using (var ms = new System.IO.MemoryStream()) { st.CopyTo(ms); if (ms.Length > 0) return ms.ToArray(); }
+            }
+            catch { }
+            try { if (System.IO.File.Exists(path)) return System.IO.File.ReadAllBytes(path); } catch { }
+            return null;
+        }
+
         static Tex LoadDds(string rel)
         {
             if (string.IsNullOrEmpty(rel)) return null;
@@ -485,11 +558,34 @@ float4 PS(PI i) : SV_Target { float3 n = normalize(i.nrm); float l = saturate(do
             res = null;
             try
             {
+                // icons of the game are below the content folder; icons of mods (online games, workshop items) lie in the mod's folder or inside its package:
+                // the game's own file system finds both
+                byte[] b = null;
                 string p = rel;
                 if (!System.IO.Path.IsPathRooted(p)) p = System.IO.Path.Combine(VRage.FileSystem.MyFileSystem.ContentPath, rel);
-                if (System.IO.File.Exists(p) && dev != null)
+                b = ReadAllBytes(p);
+                if (b == null && !System.IO.Path.IsPathRooted(rel)) b = ReadAllBytes(rel);
+                if (b == null && missingLog++ < 12) Plugin.Log("icon not found: " + rel);
+                if (b != null && b.Length > 8 && dev != null && !(b.Length > 128 && b[0] == 'D' && b[1] == 'D' && b[2] == 'S'))
                 {
-                    byte[] b = System.IO.File.ReadAllBytes(p);
+                    // a picture file (png, jpg ...)
+                    using (var ms = new System.IO.MemoryStream(b)) using (var bmp = new Bitmap(ms))
+                    {
+                        var rect = new System.Drawing.Rectangle(0, 0, bmp.Width, bmp.Height);
+                        var data = bmp.LockBits(rect, ImageLockMode.ReadOnly, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
+                        var desc0 = new Texture2DDescription
+                        {
+                            Width = bmp.Width, Height = bmp.Height, MipLevels = 1, ArraySize = 1, Format = Format.B8G8R8A8_UNorm_SRgb,
+                            SampleDescription = new SampleDescription(1, 0), Usage = ResourceUsage.Immutable, BindFlags = BindFlags.ShaderResource
+                        };
+                        var tex0 = new Texture2D(dev, desc0, new DataRectangle(data.Scan0, data.Stride));
+                        bmp.UnlockBits(data);
+                        res = new Tex { T = tex0, V = new ShaderResourceView(dev, tex0), Aspect = (float)bmp.Width / bmp.Height, Used = Environment.TickCount };
+                    }
+                    b = null;
+                }
+                if (b != null && dev != null)
+                {
                     if (b.Length > 128 && b[0] == 'D' && b[1] == 'D' && b[2] == 'S')
                     {
                         int hgt = BitConverter.ToInt32(b, 12), wid = BitConverter.ToInt32(b, 16), mips = Math.Max(1, BitConverter.ToInt32(b, 28));

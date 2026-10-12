@@ -22,7 +22,7 @@ namespace SeVr.Vr
             new Def(Zone.LHead,   -0.13f, -0.03f, -0.02f, 0.14f),
             new Def(Zone.Shoulder, 0.21f, -0.10f,  0.20f, 0.15f),
             new Def(Zone.LShoulder,-0.21f, -0.10f,  0.20f, 0.15f),
-            new Def(Zone.Chest,    0.00f, -0.32f, -0.10f, 0.14f),
+            new Def(Zone.Chest,    0.00f, -0.32f, -0.01f, 0.12f),
             new Def(Zone.RHip,     0.25f, -0.64f,  0.00f, 0.20f),
             new Def(Zone.LHip,    -0.25f, -0.64f,  0.00f, 0.20f),
         };

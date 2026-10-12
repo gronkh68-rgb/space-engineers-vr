@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using SeVr.Generated;
@@ -378,7 +378,8 @@ namespace SeVr.Xr
             if (ViewsValid && !loggedFirstFrame) { loggedFirstFrame = true; Plugin.Log("XR: first frame, shouldRender=" + frameState.shouldRender + " fovL=" + Views[0].fov.left + "/" + Views[0].fov.right + " pos " + v[0].pose.position.x + "," + v[0].pose.position.y + "," + v[0].pose.position.z); }
             if (ViewsValid) { Views[0] = v[0]; Views[1] = v[1]; }
             SyncInput();
-            if (ViewsValid) UpdatePointer();
+            HudLaserOn = false; HudLaserOnL = false;
+            if (ViewsValid) { UpdatePointer(); UpdateEdit(); }
             return ViewsValid;
         }
 
@@ -458,17 +459,40 @@ namespace SeVr.Xr
         public bool HudLocked;                  // the HUD picture stays where the head was when it was drawn
         public N.Pose HudLockedPose;            // that head pose (tracking space)
         public float HudTanX = 1f, HudTanY = 1f;
-        public const int PartCount = 10;        // 0 info, 1 components, 5 chat, 6 crosshair (always head-locked), 2 3 4 7 8 9: the pieces found in the rest of the HUD
+        public const int PartCount = 24;     // 0 info, 1 components, 5 chat, 6 crosshair (always head-locked), 2 3 4 7 8 9: the pieces found in the rest of the HUD
         public const int PanelW = 1536, PanelH = 1024;
-        sealed class PanelImg { public ulong Sc; public IntPtr[] Images = new IntPtr[0]; public bool Ready; public int W, H; public string Anchor = "hud"; public float WidthM = 0.26f; public bool Premult; }
+        sealed class PanelImg { public ulong Sc; public IntPtr[] Images = new IntPtr[0]; public bool Ready; public int AX, AY; public int W, H; public string Anchor = "hud"; public float WidthM = 0.26f; public bool Premult; }
         readonly PanelImg[] panels = MakePanels();
         static PanelImg[] MakePanels() { var a = new PanelImg[PartCount]; for (int i = 0; i < PartCount; i++) a[i] = new PanelImg(); return a; }
         public static readonly int[] ClusterSlots = { 3, 2, 4, 7, 8, 9 };      // the pieces of the HUD, from left to right
         static readonly int[] RowOrder = { 7, 0, 1, 3, 4, 5, 8, 9, 2 };      // left to right in a bottom row
         // 0 status, indicators and chat (under the tool bar), 1 tool bar, 2 block info and components, 3 notifications
+        static readonly int[] HandRowOrder = { 0, 1, 2, 3, 4 };        // left to right in a row of the hand menu
+        static int HandRow(int part) { return (part == 0 || part == 1) ? 0 : part == 2 ? 1 : 2; }
         static int RowOf(int part) { return part == 2 ? 1 : (part == 0 || part == 1) ? 2 : part == 7 ? 3 : part == 5 ? 5 : 0; }      // 5: the chat, placed on its own
         static readonly int[] StackOrder = { 3, 4, 7, 8, 9, 0, 1, 5, 2 };     // bottom to top when several parts share a hand
 
+        /// <summary>
+        /// The runtime only allows about a dozen swapchains, so the small parts (hand buttons, strips, the cockpit bars) share one: an atlas, kept as a
+        /// texture of the renderer and copied into the swapchain image once per frame. Each part has its own rectangle in it.
+        /// </summary>
+        public static bool AtlasPart(int part) { return IsHandButton(part) || part == 15 || part == 11 || part == 13 || part == 14 || part == 22 || part == 23; }
+        public static void AtlasPos(int part, out int x, out int y)
+        {
+            x = 0; y = 0;
+            if (part == 8) { x = 1280; y = 0; }
+            else if (part == 18) { x = 1280; y = 480; }
+            else if (part == 23) { x = 0; y = 0; }
+            else if (part == 11) { x = 576; y = 0; }
+            else if (part == 14) { x = 0; y = 128; }
+            else if (part == 13) { x = 0; y = 256; }
+            else if (part == 22) { x = 0; y = 384; }
+            else if (part == 15) { x = 0; y = 640; }
+        }
+        ulong atlasSc; IntPtr[] atlasImages = new IntPtr[0];
+        public IntPtr AtlasFirstImage { get { return atlasImages.Length > 0 ? atlasImages[0] : IntPtr.Zero; } }
+        public IntPtr AcquireAtlas() { return atlasSc == 0 ? IntPtr.Zero : Acquire(atlasSc, atlasImages); }
+        public void ReleaseAtlas() { if (atlasSc != 0) Release(atlasSc); }
         public bool EnsurePanelSwapchain(int part, int backbufferDxgiFormat, out string error)
         {
             error = null;
@@ -476,6 +500,17 @@ namespace SeVr.Xr
             if (p.Sc != 0) return true;
             long chosen = PickFormat(backbufferDxgiFormat);
             if (chosen == 0) { error = "No compatible panel swapchain format"; return false; }
+            if (AtlasPart(part))
+            {
+                if (atlasSc == 0)
+                {
+                    if (!CreateSc((uint)PanelW, (uint)PanelH, chosen, out atlasSc, out atlasImages, out error)) return false;
+                    Plugin.Log("XR: atlas swapchain " + PanelW + "x" + PanelH);
+                }
+                p.Sc = atlasSc; p.Images = atlasImages;
+                AtlasPos(part, out p.AX, out p.AY);
+                return true;
+            }
             if (!CreateSc((uint)PanelW, (uint)PanelH, chosen, out p.Sc, out p.Images, out error)) return false;
             Plugin.Log("XR: panel swapchain " + part + " " + PanelW + "x" + PanelH);
             return true;
@@ -495,6 +530,64 @@ namespace SeVr.Xr
         }
 
         float PartHeight(PanelImg p) { return p.H * (p.WidthM / Math.Max(1, p.W)); }
+
+        // where each part was shown in the last frame (tracking space), for pointing at it
+        readonly N.Pose[] partPose = new N.Pose[PartCount];
+        readonly float[] partW = new float[PartCount], partH = new float[PartCount];
+        readonly bool[] partPoseOk = new bool[PartCount];
+
+        /// <summary>
+        /// Where the hand's aim ray hits a part as it was shown last frame: u, v in 0..1 over the part (v down from the top). False when the ray misses it.
+        /// </summary>
+        public bool PointAt(int part, bool rightHand, out float u, out float v)
+        {
+            float t;
+            return RayHit(part, rightHand, out u, out v, out t);
+        }
+
+        bool RayHit(int part, bool rightHand, out float u, out float v, out float t)
+        {
+            u = v = 0f; t = 0f;
+            if (!partPoseOk[part] || !(rightHand ? HandRValid : HandLValid)) return false;
+            var hp = rightHand ? HandR : HandL;
+            N.Vec3 o = hp.position, d = Rotate(hp.orientation, new N.Vec3 { z = -1f });
+            var pp = partPose[part];
+            N.Vec3 nx = Rotate(pp.orientation, new N.Vec3 { x = 1f }), ny = Rotate(pp.orientation, new N.Vec3 { y = 1f }), nz = Rotate(pp.orientation, new N.Vec3 { z = 1f });
+            float den = Dot3(d, nz);
+            if (Math.Abs(den) < 1e-4f) return false;
+            t = Dot3(Sub3(pp.position, o), nz) / den;
+            if (t < 0.02f || t > 3f) return false;
+            N.Vec3 rel = Sub3(Add3(o, Mul3(d, t)), pp.position);
+            u = Dot3(rel, nx) / Math.Max(1e-4f, partW[part]) + 0.5f;
+            v = 0.5f - Dot3(rel, ny) / Math.Max(1e-4f, partH[part]);
+            return u >= 0f && u <= 1f && v >= 0f && v <= 1f;
+        }
+
+        /// <summary>True when the hand's aim ray passes within radius metres of the centre of a part (for small buttons).</summary>
+        public bool PointNear(int part, bool rightHand, float radius)
+        {
+            if (!partPoseOk[part] || !(rightHand ? HandRValid : HandLValid)) return false;
+            var hp = rightHand ? HandR : HandL;
+            N.Vec3 o = hp.position, d = Rotate(hp.orientation, new N.Vec3 { z = -1f }), c = partPose[part].position;
+            float t = Dot3(Sub3(c, o), d);
+            if (t < 0.02f || t > 1.5f) return false;
+            return Len3(Sub3(Add3(o, Mul3(d, t)), c)) < radius;
+        }
+
+        /// <summary>1 when the hand is where you are looking (about 25 degrees around the gaze), fading to 0 at 50 degrees; 1 when it is not tracked.</summary>
+        public float GazeFactor(bool leftHand)
+        {
+            if (!ViewsValid || !(leftHand ? HandLValid : HandRValid)) return 1f;
+            N.Vec3 head = Mul3(Add3(Views[0].pose.position, Views[1].pose.position), 0.5f);
+            N.Vec3 f = Rotate(HeadOrientation(), new N.Vec3 { z = -1f });
+            N.Vec3 d = Sub3(leftHand ? BodyHandL.position : BodyHandR.position, head);
+            float l = Len3(d);
+            if (l < 1e-3f) return 1f;
+            float c = Dot3(d, f) / l;
+            const float c0 = 0.643f, c1 = 0.906f;       // cos 50, cos 25
+            float t = Math.Max(0f, Math.Min(1f, (c - c0) / (c1 - c0)));
+            return t * t * (3f - 2f * t);
+        }
 
         /// <summary>Orientation of the head: the two eyes' orientations averaged (displays can be turned outwards a little, one eye alone is not straight ahead).</summary>
         public N.Quat HeadOrientation()
@@ -522,9 +615,222 @@ namespace SeVr.Xr
             fwd = new N.Vec3 { x = sy, z = -cy };
         }
         float lastBodyYaw;
+        string seatRefFor; N.Vec3 seatRef;
+
+        // ---- moving HUD parts around (edit mode) and the menu's keyboard: offsets from the default place or from the hand / head they are tied to,
+        // saved in the settings file per part and HUD mode
+
+        public int EditHoverPart = -1;                 // the part the right hand points at in edit mode (or the one being held)
+        public int FocusPart = -1;                     // the part the edit strip is shown at (the last one pointed at)
+        long focusStamp;
+        int grabPart = -1; N.Pose grabRel, liveOffset; float liveScale = 1f; int liveAtt; bool gripWasEdit, scaleOnly; long lastEditTicks;
+        float scaleX0, scaleS0; N.Vec3 scaleAxis;
+        readonly N.Pose[] partDefault = new N.Pose[PartCount];
+
+        static N.Quat QMul(N.Quat a, N.Quat b)
+        {
+            return new N.Quat
+            {
+                w = a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z,
+                x = a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+                y = a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+                z = a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w
+            };
+        }
+        static N.Quat QConj(N.Quat a) { return new N.Quat { x = -a.x, y = -a.y, z = -a.z, w = a.w }; }
+        static N.Pose PoseMul(N.Pose a, N.Pose b) { return new N.Pose { position = Add3(a.position, Rotate(a.orientation, b.position)), orientation = QMul(a.orientation, b.orientation) }; }
+        static N.Pose PoseInv(N.Pose a) { var q = QConj(a.orientation); return new N.Pose { orientation = q, position = Rotate(q, Mul3(a.position, -1f)) }; }
+
+        // the crosshair, the buttons on the hand and the strips are not moved by the player
+        static bool Movable(int part) { return part != 6 && part != 8 && part != 9 && part != 10 && part != 11 && part != 13 && part != 14 && !IsHandButton(part); }
+        /// <summary>The button clusters on the back of the hands, one layer each: 8 on the left (menu, edit, reset, chat, K, G, I), 18 on the right (F10, Alt+F10, Shift+F10).</summary>
+        public static bool IsHandButton(int part) { return part == 8 || part == 18; }
+        // the keys are looked up several times per part and frame: built once per HUD mode
+        static string[] layoutKeys; static string layoutKeysMode, layoutKeysSeat;
+        static string LayoutKey(int part)
+        {
+            // sitting in a seat or cockpit, every part has its own place per block type (the screens and the view differ in each cockpit)
+            string mode = Plugin.Config.HudMode, sk = VrHead.SeatKey ?? "";
+            if (layoutKeys == null || !ReferenceEquals(layoutKeysMode, mode) || layoutKeysSeat != sk)
+            {
+                layoutKeysMode = mode; layoutKeysSeat = sk;
+                layoutKeys = new string[PartCount];
+                string tail = sk.Length > 0 ? "@seat:" + sk : "";
+                for (int i = 0; i < PartCount; i++)
+                    layoutKeys[i] = i == 12 ? "12@menu" : (i == 22 || i == 23) ? i + "@seat:" + sk : i + "@" + mode + tail;
+            }
+            return layoutKeys[part];
+        }
+
+        N.Pose HandFrame() { return HandLValid ? BodyHandL : BodyHandR; }
+        N.Pose HeadFrame() { return new N.Pose { position = Mul3(Add3(Views[0].pose.position, Views[1].pose.position), 0.5f), orientation = HeadOrientation() }; }
+
+        /// <summary>The frame an offset is measured in: the default place of the part (att 0), the left hand (1) or the head (2). False when it is not available.</summary>
+        bool FrameFor(int att, int part, out N.Pose f)
+        {
+            f = partDefault[part];
+            if (att == 1) { if (!HandLValid && !HandRValid) return false; f = HandFrame(); return true; }
+            if (att == 2) { if (!ViewsValid) return false; f = HeadFrame(); return true; }
+            return true;
+        }
+
+        bool TryLayout(int part, out N.Pose off, out float scale, out int att)
+        {
+            off = new N.Pose { orientation = new N.Quat { w = 1f } }; scale = 1f; att = 0;
+            if (!Movable(part)) return false;
+            if (part == grabPart) { off = liveOffset; scale = liveScale; att = liveAtt; return true; }
+            float[] a;
+            if (!Plugin.Config.Layout.TryGetValue(LayoutKey(part), out a) || a.Length < 8) return false;
+            off = new N.Pose { position = new N.Vec3 { x = a[0], y = a[1], z = a[2] }, orientation = new N.Quat { x = a[3], y = a[4], z = a[5], w = a[6] } };
+            scale = a[7];
+            att = a.Length >= 9 ? (int)a[8] : 0;
+            return true;
+        }
+
+        float ScaleOf(int part) { N.Pose o; float s; int a; return TryLayout(part, out o, out s, out a) ? s : 1f; }
+        public int AttachOf(int part) { N.Pose o; float s; int a; return TryLayout(part, out o, out s, out a) ? a : 0; }
+
+        /// <summary>Pose of a part: its default place, or the hand / head it is tied to, with the offset the player gave it in edit mode.</summary>
+        bool BuildPartPose(int part, out N.Pose pose)
+        {
+            if (!BuildPartPoseDefault(part, out pose)) return false;
+            partDefault[part] = pose;
+            N.Pose off; float sc; int att;
+            if (TryLayout(part, out off, out sc, out att))
+            {
+                N.Pose fr;
+                if (!FrameFor(att, part, out fr)) return false;
+                pose = PoseMul(fr, off);
+            }
+            return true;
+        }
+
+        /// <summary>Tie a part to the left hand (1), the head (2) or put it back at its default place (0), where it is now.</summary>
+        public void SetAttach(int part, int att)
+        {
+            if (!Movable(part) || !partPoseOk[part]) return;
+            N.Pose off; float sc; int cur;
+            if (!TryLayout(part, out off, out sc, out cur)) sc = 1f;
+            N.Pose fr;
+            if (!FrameFor(att, part, out fr)) return;
+            var no = PoseMul(PoseInv(fr), partPose[part]);
+            Plugin.Config.Layout[LayoutKey(part)] = new[] { no.position.x, no.position.y, no.position.z, no.orientation.x, no.orientation.y, no.orientation.z, no.orientation.w, sc, (float)att };
+            try { Plugin.SaveConfig(); } catch { }
+        }
+
+        /// <summary>
+        /// Called once per frame. Edit mode: the grip of the right hand picks up the part it points at and moves it with the hand (right stick up / down: size);
+        /// holding the grip over the strip's size button and moving the hand sideways scales the part. In a menu the same works for the keyboard.
+        /// </summary>
+        void UpdateEdit()
+        {
+            bool menuEdit = MenuMode;
+            bool hudEdit = VrOwnHud.EditMode && !MenuMode;
+            if ((!hudEdit && !menuEdit) || !HandRValid) { if (grabPart >= 0) EndGrab(); EditHoverPart = -1; gripWasEdit = false; return; }
+            long now = System.Diagnostics.Stopwatch.GetTimestamp();
+            float dt = lastEditTicks == 0 ? 0.011f : Math.Min(0.1f, (float)(now - lastEditTicks) / System.Diagnostics.Stopwatch.Frequency);
+            lastEditTicks = now;
+            bool down = VrControls.GripR > 0.6f;
+            int hover = -1; float best = 99f;
+            for (int p = 0; p < PartCount; p++)
+            {
+                if (!Movable(p) || (p == 12) != menuEdit) continue;      // in a menu only the keyboard, in edit mode every HUD part
+                float u, v, t;
+                if (RayHit(p, true, out u, out v, out t) && t < best) { best = t; hover = p; }
+            }
+            EditHoverPart = grabPart >= 0 ? grabPart : hover;
+            if (hudEdit)
+            {
+                if (EditHoverPart >= 0) { FocusPart = EditHoverPart; focusStamp = now; }
+                else if (VrOwnHud.StripHover >= 0) focusStamp = now;
+                else if (now - focusStamp > 3 * System.Diagnostics.Stopwatch.Frequency) FocusPart = -1;
+            }
+            else FocusPart = -1;
+
+            if (down && !gripWasEdit && grabPart < 0)
+            {
+                if (hudEdit && FocusPart >= 0 && partPoseOk[FocusPart] && VrOwnHud.StripHover == 0)
+                {
+                    // the size button of the strip: hold the grip and move the hand sideways
+                    // (the saved values are read before the part counts as held, TryLayout returns the live ones for a held part)
+                    if (!TryLayout(FocusPart, out liveOffset, out liveScale, out liveAtt)) { liveOffset = new N.Pose { orientation = new N.Quat { w = 1f } }; liveScale = 1f; liveAtt = 0; }
+                    grabPart = FocusPart; scaleOnly = true;
+                    scaleS0 = liveScale;
+                    scaleAxis = Rotate(partPose[grabPart].orientation, new N.Vec3 { x = 1f });
+                    scaleX0 = Dot3(HandR.position, scaleAxis);
+                    Haptic(false, 0.04f, 0.6f);
+                }
+                else if (hover >= 0 && (hudEdit || !Plugin.Config.MenuLocked))
+                {
+                    if (!TryLayout(hover, out liveOffset, out liveScale, out liveAtt)) { liveOffset = new N.Pose { orientation = new N.Quat { w = 1f } }; liveScale = 1f; liveAtt = 0; }
+                    grabPart = hover; scaleOnly = false;
+                    grabRel = PoseMul(PoseInv(HandR), partPose[hover]);
+                    Haptic(false, 0.04f, 0.6f);
+                }
+            }
+            if (grabPart >= 0)
+            {
+                if (down)
+                {
+                    if (scaleOnly)
+                        liveScale = Math.Max(0.3f, Math.Min(3f, scaleS0 * (float)Math.Exp(2.4f * (Dot3(HandR.position, scaleAxis) - scaleX0))));
+                    else
+                    {
+                        var desired = PoseMul(HandR, grabRel);
+                        N.Pose fr;
+                        if (FrameFor(liveAtt, grabPart, out fr)) liveOffset = PoseMul(PoseInv(fr), desired);
+                        liveScale = Math.Max(0.3f, Math.Min(3f, liveScale * (1f + VrControls.TurnY * dt * 0.9f)));
+                    }
+                }
+                else EndGrab();
+            }
+            gripWasEdit = down;
+        }
+
+        void EndGrab()
+        {
+            if (grabPart < 0) return;
+            var o = liveOffset;
+            Plugin.Config.Layout[LayoutKey(grabPart)] = new[] { o.position.x, o.position.y, o.position.z, o.orientation.x, o.orientation.y, o.orientation.z, o.orientation.w, liveScale, (float)liveAtt };
+            grabPart = -1; scaleOnly = false;
+            try { Plugin.SaveConfig(); } catch { }
+        }
+
+        /// <summary>Back to the default places: forget every moved part of the current HUD mode.</summary>
+        public void ResetLayout()
+        {
+            grabPart = -1;
+            seatRefFor = null;
+            string suffix = "@" + Plugin.Config.HudMode;
+            // sitting: only this cockpit type's arrangement is forgotten; on foot: the one of the HUD mode
+            string seatSuffix = VrHead.SeatKey != null ? "@seat:" + VrHead.SeatKey : null;
+            foreach (var k in new System.Collections.Generic.List<string>(Plugin.Config.Layout.Keys))
+                if (seatSuffix != null ? k.EndsWith(seatSuffix) : k.EndsWith(suffix)) Plugin.Config.Layout.Remove(k);
+            try { Plugin.SaveConfig(); } catch { }
+        }
+
+        // a laser from the right controller to what it points at on a HUD part (hand menu, edit strip, keyboard ...)
+        public bool HudLaserOn, HudLaserOnL; public N.Vec3 HudLaserTo, HudLaserToL;
+        public void SetHudLaser(N.Vec3 to, bool left = false) { if (left) { HudLaserOnL = true; HudLaserToL = to; } else { HudLaserOn = true; HudLaserTo = to; } }
+
+        /// <summary>The point on a part (as shown last frame) at u, v (0..1, v down from the top).</summary>
+        public N.Vec3 PartPoint(int part, float u, float v)
+        {
+            var pp = partPose[part];
+            N.Vec3 nx = Rotate(pp.orientation, new N.Vec3 { x = 1f }), ny = Rotate(pp.orientation, new N.Vec3 { y = 1f });
+            return Add3(pp.position, Add3(Mul3(nx, (u - 0.5f) * partW[part]), Mul3(ny, (0.5f - v) * partH[part])));
+        }
+        public N.Vec3 PartCenter(int part) { return partPose[part].position; }
+
+        /// <summary>Where a part was shown last frame (tracking space) and its size in metres, for the desktop mirror.</summary>
+        public bool TryGetShownPart(int part, out N.Pose pose, out float widthM, out float heightM)
+        {
+            pose = partPose[part]; widthM = partW[part]; heightM = partH[part];
+            return partPoseOk[part];
+        }
 
         /// <summary>Pose of a part: near its hand (turned towards the head) or fixed on the body.</summary>
-        bool BuildPartPose(int part, out N.Pose pose)
+        bool BuildPartPoseDefault(int part, out N.Pose pose)
         {
             pose = new N.Pose();
             var me = panels[part];
@@ -532,6 +838,56 @@ namespace SeVr.Xr
             N.Vec3 head = Mul3(Add3(Views[0].pose.position, Views[1].pose.position), 0.5f);
             N.Vec3 pos;
             bool left;
+            if (part == 11)
+            {
+                // the edit strip: right below the part that was pointed at last
+                if (FocusPart < 0 || !partPoseOk[FocusPart]) return false;
+                var fp = partPose[FocusPart];
+                N.Vec3 fup = Rotate(fp.orientation, new N.Vec3 { y = 1f });
+                pose = new N.Pose { orientation = fp.orientation, position = Sub3(fp.position, Mul3(fup, partH[FocusPart] * 0.5f + hm * 0.5f + 0.02f)) };
+                return true;
+            }
+            if (part == 14)
+            {
+                // the production multiplier (x1 ... x1000): a strip above the menu window
+                if (!menuLocked) return false;
+                // next to the strip below the window (to its right), so it is where the other buttons are
+                N.Vec3 mup2 = Rotate(menuPose.orientation, new N.Vec3 { y = 1f }), mz2 = Rotate(menuPose.orientation, new N.Vec3 { z = 1f }), mr2 = Rotate(menuPose.orientation, new N.Vec3 { x = 1f });
+                float stripHalf = partPoseOk[13] ? partW[13] * 0.5f : 0.15f;
+                float sideX = stripHalf + 0.04f + me.WidthM * 0.5f;
+                pose = new N.Pose { orientation = menuPose.orientation, position = Add3(Add3(Add3(menuPose.position, Mul3(mup2, -(menuH * 0.5f + hm * 0.5f + 0.02f))), Mul3(mr2, sideX)), Mul3(mz2, 0.02f)) };
+                return true;
+            }
+            if (part == 12 || part == 13)
+            {
+                // below the menu window: the strip (size, lock, keyboard, pages) and under it the free-floating keyboard
+                if (!menuLocked) return false;
+                N.Vec3 mup = Rotate(menuPose.orientation, new N.Vec3 { y = 1f }), mz = Rotate(menuPose.orientation, new N.Vec3 { z = 1f });
+                // the strip hangs below the window; the keyboard stands in front of the window's lower part (its bottom edge on the window's), so it is in view
+                float down = part == 13 ? menuH * 0.5f + hm * 0.5f + 0.02f : menuH * 0.5f - hm * 0.5f;
+                pose = new N.Pose { orientation = menuPose.orientation, position = Add3(Sub3(menuPose.position, Mul3(mup, down)), Mul3(mz, part == 13 ? 0.02f : 0.10f)) };
+                return true;
+            }
+            if (part == 15)
+            {
+                // the help window: straight ahead, a little below the view (it can be moved in edit mode)
+                N.Vec3 hh, rr, ff;
+                BodyFrame(out hh, out rr, out ff);
+                pos = Add3(Add3(hh, Mul3(ff, 0.95f)), new N.Vec3 { y = -0.12f });
+                goto placed;
+            }
+            if (part == 22 || part == 23)
+            {
+                // the cockpit HUD: tool bar and button bar in front of you, a little below the view, at arm's length
+                N.Vec3 hh, rr, ff;
+                BodyFrame(out hh, out rr, out ff);
+                // fixed in the cockpit: where the head was when you sat down, straight ahead of the cockpit (the tracking space is aligned with it), tilted up at you
+                if (VrHead.SeatKey != seatRefFor) { seatRefFor = VrHead.SeatKey; seatRef = head; }
+                pos = new N.Vec3 { x = seatRef.x, y = seatRef.y + (part == 22 ? -0.34f : -0.20f), z = seatRef.z - 0.60f };
+                N.Vec3 nz = new N.Vec3 { y = 0.42f, z = 0.91f }, nx = new N.Vec3 { x = 1f };
+                pose = new N.Pose { orientation = FromBasis(nx, Cross3(nz, nx), nz), position = pos };
+                return true;
+            }
             if (me.Anchor == "view")
             {
                 // head-locked, straight ahead (the crosshair)
@@ -563,6 +919,51 @@ namespace SeVr.Xr
                 float l = Len3(toHead);
                 toHead = l > 1e-3f ? Mul3(toHead, 1f / l) : new N.Vec3 { z = 1f };
                 pos = Add3(Add3(hp, new N.Vec3 { y = up }), Mul3(toHead, 0.07f));
+            }
+            else if (me.Anchor == "handmenu")
+            {
+                // one menu on the left hand, in the plane of the controller (so it turns with the hand): block info and components right above the
+                // hand, the tool bar over them, status and indicators on top. Row heights are fixed so nothing jumps when a part appears.
+                if (!HandLValid && !HandRValid) return false;
+                N.Pose hp = HandLValid ? BodyHandL : BodyHandR;
+                float ox, oy;
+                if (IsHandButton(part))
+                {
+                    // the button clusters lie flat on the back of the hand. The hands are turned about the pointing direction (HandRoll), so the back of
+                    // the hand is not the controller's top: it is the controller's up turned by that angle (the other way round for the right hand)
+                    bool rightBtn = part == 18;
+                    if (rightBtn) { if (!HandRValid) return false; hp = BodyHandR; } else if (!HandLValid) return false;
+                    N.Vec3 bx = Rotate(hp.orientation, new N.Vec3 { x = 1f }), by = Rotate(hp.orientation, new N.Vec3 { y = 1f }), bz = Rotate(hp.orientation, new N.Vec3 { z = 1f });
+                    N.Vec3 fwdh = Mul3(bz, -1f);
+                    float rr = Plugin.Config.HandRoll * 0.017453292f, sn = (float)Math.Sin(rr), cs = (float)Math.Cos(rr);
+                    N.Vec3 back = Add3(Mul3(bx, rightBtn ? sn : -sn), Mul3(by, cs));
+                    N.Vec3 px = Cross3(fwdh, back);
+                    float along = hm * 0.5f - 0.0225f;           // the cluster starts at the knuckles and runs along the hand
+                    pos = Add3(Add3(hp.position, Mul3(back, 0.03f)), Mul3(fwdh, along));
+                    pose = new N.Pose { orientation = FromBasis(px, fwdh, back), position = pos };         // panel x = across the hand, panel up = pointing direction, panel normal = out of the back of the hand
+                    return true;
+                }
+                else
+                {
+                    int row = (part == 0 || part == 1) ? 0 : part == 2 ? 1 : 2;
+                    float total = 0f, start = 0f;
+                    bool found = false;
+                    foreach (int i in HandRowOrder)
+                    {
+                        var o = panels[i];
+                        if (!o.Ready || o.Sc == 0 || o.Anchor != "handmenu" || HandRow(i) != row) continue;
+                        if (i == part) { found = true; start = total; }
+                        total += o.WidthM + 0.01f;
+                    }
+                    if (!found) return false;
+                    ox = -(total - 0.01f) * 0.5f + start + me.WidthM * 0.5f;
+                    float bottom = row == 0 ? 0.09f : row == 1 ? 0.20f : 0.275f;
+                    oy = bottom + hm / 2f;
+                }
+                N.Vec3 hxv = Rotate(hp.orientation, new N.Vec3 { x = 1f }), hyv = Rotate(hp.orientation, new N.Vec3 { y = 1f });
+                pos = Add3(hp.position, Add3(Mul3(hxv, ox), Mul3(hyv, oy)));
+                pose = new N.Pose { orientation = hp.orientation, position = pos };
+                return true;
             }
             else if (me.Anchor == "bottom" || me.Anchor == "bottom2")
             {
@@ -699,6 +1100,15 @@ namespace SeVr.Xr
         public IntPtr AcquireHud() { return Acquire(hudSwapchain, hudImages); }
         public void ReleaseHud() { Release(hudSwapchain); }
 
+        static N.SwapchainSubImage SubPart(PanelImg pn)
+        {
+            return new N.SwapchainSubImage
+            {
+                swapchain = pn.Sc,
+                imageRect = new N.Rect2Di { offset = new N.Offset2Di { x = pn.AX, y = pn.AY }, extent = new N.Extent2Di { width = pn.W, height = pn.H } }
+            };
+        }
+
         static N.SwapchainSubImage Sub(ulong sc, int x, int w, int h)
         {
             return new N.SwapchainSubImage
@@ -721,13 +1131,15 @@ namespace SeVr.Xr
                 return;
             }
 
-            void** layers = stackalloc void*[20];
+            void** layers = stackalloc void*[48];
             N.CompositionLayerQuad* pq = stackalloc N.CompositionLayerQuad[PartCount];
             N.CompositionLayerProjectionView* pv = stackalloc N.CompositionLayerProjectionView[2];
             N.CompositionLayerProjection proj = new N.CompositionLayerProjection();
             N.CompositionLayerQuad quad = new N.CompositionLayerQuad();
             N.CompositionLayerQuad hud = new N.CompositionLayerQuad();
             N.CompositionLayerQuad laserQuad = new N.CompositionLayerQuad();
+            N.CompositionLayerQuad laserQuad2 = new N.CompositionLayerQuad();
+            N.CompositionLayerQuad laserQuad3 = new N.CompositionLayerQuad();
             int half = (int)(ScWidth / 2);
             uint n = 0;
 
@@ -757,6 +1169,24 @@ namespace SeVr.Xr
                         };
                         layers[n++] = &hud;
                         if (BuildLaser(out laserQuad)) layers[n++] = &laserQuad;
+                        // the strip below the menu window (size, lock, keyboard, pages) and the free-floating keyboard
+                        for (int part = 12; part <= 14; part++)
+                        {
+                            var pn = panels[part];
+                            N.Pose pp;
+                            partPoseOk[part] = false;
+                            if (!pn.Ready || pn.Sc == 0 || pn.W <= 0 || pn.H <= 0 || !BuildPartPose(part, out pp)) continue;
+                            float psc = ScaleOf(part);
+                            partPose[part] = pp; partW[part] = pn.WidthM * psc; partH[part] = PartHeight(pn) * psc; partPoseOk[part] = true;
+                            pq[part] = new N.CompositionLayerQuad
+                            {
+                                type = N.T.CompositionLayerQuad, layerFlags = pn.Premult ? 2UL : 6UL, space = localSpace, eyeVisibility = 0,
+                                subImage = SubPart(pn), pose = pp, size = new N.Extent2Df { width = partW[part], height = partH[part] }
+                            };
+                            layers[n++] = &pq[part];
+                        }
+                        if (HudLaserOn && BuildLaserBetween(Add3(HandR.position, Mul3(Rotate(HandR.orientation, new N.Vec3 { z = -1f }), 0.04f)), HudLaserTo, out laserQuad2)) layers[n++] = &laserQuad2;
+                        if (HudLaserOnL && HandLValid && BuildLaserBetween(Add3(HandL.position, Mul3(Rotate(HandL.orientation, new N.Vec3 { z = -1f }), 0.04f)), HudLaserToL, out laserQuad3)) layers[n++] = &laserQuad3;
                     }
                     else
                     {
@@ -789,16 +1219,21 @@ namespace SeVr.Xr
                         {
                             var pn = panels[part];
                             N.Pose pp;
+                            partPoseOk[part] = false;
                             if (!pn.Ready || pn.Sc == 0 || pn.W <= 0 || pn.H <= 0 || !BuildPartPose(part, out pp)) continue;
+                            float psc = ScaleOf(part);
+                            partPose[part] = pp; partW[part] = pn.WidthM * psc; partH[part] = PartHeight(pn) * psc; partPoseOk[part] = true;
                             pq[part] = new N.CompositionLayerQuad
                             {
                                 type = N.T.CompositionLayerQuad, layerFlags = pn.Premult ? 2UL : 6UL, space = localSpace, eyeVisibility = 0,
-                                subImage = Sub(pn.Sc, 0, pn.W, pn.H),
+                                subImage = SubPart(pn),
                                 pose = pp,
-                                size = new N.Extent2Df { width = pn.WidthM, height = PartHeight(pn) }
+                                size = new N.Extent2Df { width = partW[part], height = partH[part] }
                             };
                             layers[n++] = &pq[part];
                         }
+                        if (HudLaserOn && HandRValid && BuildLaserBetween(Add3(HandR.position, Mul3(Rotate(HandR.orientation, new N.Vec3 { z = -1f }), 0.04f)), HudLaserTo, out laserQuad2)) layers[n++] = &laserQuad2;
+                        if (HudLaserOnL && HandLValid && BuildLaserBetween(Add3(HandL.position, Mul3(Rotate(HandL.orientation, new N.Vec3 { z = -1f }), 0.04f)), HudLaserToL, out laserQuad3)) layers[n++] = &laserQuad3;
                     }
                 }
                 for (int part = 0; part < PartCount; part++) panels[part].Ready = false;
@@ -887,8 +1322,14 @@ namespace SeVr.Xr
         bool BuildLaser(out N.CompositionLayerQuad q)
         {
             q = new N.CompositionLayerQuad();
-            if (!PointerValid || laserSwapchain == 0 || !laserReady) return false;
-            N.Vec3 a = LaserFrom, b = LaserTo;
+            if (!PointerValid) return false;
+            return BuildLaserBetween(LaserFrom, LaserTo, out q);
+        }
+
+        bool BuildLaserBetween(N.Vec3 a, N.Vec3 b, out N.CompositionLayerQuad q)
+        {
+            q = new N.CompositionLayerQuad();
+            if (laserSwapchain == 0 || !laserReady) return false;
             N.Vec3 dir = Sub3(b, a); float len = Len3(dir);
             if (len < 0.05f) return false;
             dir = Mul3(dir, 1f / len);
@@ -912,20 +1353,69 @@ namespace SeVr.Xr
         void LockMenu(float distance)
         {
             var hp = Mul3(Add3(Views[0].pose.position, Views[1].pose.position), 0.5f);
-            var f = Rotate(Views[0].pose.orientation, new N.Vec3 { z = -1f });
+            var f = Rotate(HeadOrientation(), new N.Vec3 { z = -1f });
             float yaw = (float)Math.Atan2(-f.x, -f.z);
             var q = new N.Quat { x = 0, y = (float)Math.Sin(yaw / 2), z = 0, w = (float)Math.Cos(yaw / 2) };
             var fwd = Rotate(q, new N.Vec3 { z = -1f });
-            menuPose = new N.Pose { orientation = q, position = new N.Vec3 { x = hp.x + fwd.x * distance, y = hp.y, z = hp.z + fwd.z * distance } };
+            var right = Rotate(q, new N.Vec3 { x = 1f });
+            // tilted back like a tablet (MenuTilt: top edge away from you), lower than the eyes (MenuHeight), moved sideways (MenuSide)
+            float tilt = Plugin.Config.MenuTilt * 0.017453292f;
+            var qt = QMul(q, new N.Quat { x = (float)Math.Sin(-tilt / 2f), y = 0f, z = 0f, w = (float)Math.Cos(tilt / 2f) });
+            menuPose = new N.Pose
+            {
+                orientation = qt,
+                position = new N.Vec3 { x = hp.x + fwd.x * distance + right.x * Plugin.Config.MenuSide, y = hp.y + Plugin.Config.MenuHeight, z = hp.z + fwd.z * distance + right.z * Plugin.Config.MenuSide }
+            };
             menuLocked = true;
+            menuGrab = false;
+        }
+
+        // the menu window can be picked up with a grip while the right controller points at it; where it is put down is kept (MenuTilt, MenuHeight, MenuSide, MenuDistance)
+        bool menuGrab, menuGripWas, menuScale; N.Pose menuGrabRel; float menuScaleX0, menuScaleW0; N.Vec3 menuScaleAxis;
+
+        void SaveMenuPlacement()
+        {
+            var hp = Mul3(Add3(Views[0].pose.position, Views[1].pose.position), 0.5f);
+            var f = Rotate(HeadOrientation(), new N.Vec3 { z = -1f });
+            float yaw = (float)Math.Atan2(-f.x, -f.z);
+            var q = new N.Quat { x = 0, y = (float)Math.Sin(yaw / 2), z = 0, w = (float)Math.Cos(yaw / 2) };
+            var fwd = Rotate(q, new N.Vec3 { z = -1f });
+            var right = Rotate(q, new N.Vec3 { x = 1f });
+            var rel = Sub3(menuPose.position, hp);
+            var n = Rotate(menuPose.orientation, new N.Vec3 { z = 1f });
+            var c = Plugin.Config;
+            c.MenuDistance = Math.Max(0.6f, Math.Min(4f, Dot3(rel, fwd)));
+            c.MenuSide = Math.Max(-2f, Math.Min(2f, Dot3(rel, right)));
+            c.MenuHeight = Math.Max(-1.2f, Math.Min(1f, rel.y));
+            c.MenuTilt = Math.Max(-10f, Math.Min(80f, (float)Math.Asin(Math.Max(-1f, Math.Min(1f, n.y))) * 57.29578f));
+            try { Plugin.SaveConfig(); Plugin.ApplyConfig(); } catch { }
         }
 
         /// <summary>Where the right controller points on the locked menu screen (called every frame while a menu is open).</summary>
         void UpdatePointer()
         {
             PointerValid = false;
-            if (!MenuMode) { menuLocked = false; return; }
+            if (!MenuMode) { menuLocked = false; if (menuGrab) { menuGrab = false; SaveMenuPlacement(); } menuScale = false; menuGripWas = false; return; }
             if (!menuLocked || !HandRValid) return;
+            bool gripDown = Math.Max(VrControls.GripL, VrControls.GripR) > 0.7f;
+            if (menuGrab)
+            {
+                if (gripDown) menuPose = PoseMul(HandR, menuGrabRel);
+                else { menuGrab = false; SaveMenuPlacement(); }
+            }
+            // the size button of the strip below the window: hold a grip and move the hand sideways to scale the window
+            if (menuScale)
+            {
+                if (gripDown) VrRenderer.MenuWidth = Math.Max(0.6f, Math.Min(4f, menuScaleW0 * (float)Math.Exp(2.0f * (Dot3(HandR.position, menuScaleAxis) - menuScaleX0))));
+                else { menuScale = false; Plugin.Config.MenuWidth = VrRenderer.MenuWidth; try { Plugin.SaveConfig(); } catch { } }
+            }
+            else if (gripDown && !menuGripWas && !menuGrab && VrOwnHud.MenuStripHover == 0 && !Plugin.Config.MenuLocked)
+            {
+                menuScale = true; menuScaleW0 = VrRenderer.MenuWidth;
+                menuScaleAxis = Rotate(menuPose.orientation, new N.Vec3 { x = 1f });
+                menuScaleX0 = Dot3(HandR.position, menuScaleAxis);
+                Haptic(false, 0.04f, 0.6f);
+            }
             var o = HandR.position;
             var d = Rotate(HandR.orientation, new N.Vec3 { z = -1f });
             var n = Rotate(menuPose.orientation, new N.Vec3 { z = 1f });
@@ -939,7 +1429,10 @@ namespace SeVr.Xr
             float y = Dot3(rel, Rotate(menuPose.orientation, new N.Vec3 { y = 1f }));
             float u = x / menuW + 0.5f, v = 0.5f - y / menuH;
             LaserFrom = Add3(o, Mul3(d, 0.04f)); LaserTo = hit;
-            if (u < 0f || u > 1f || v < 0f || v > 1f) return;
+            bool onMenu = u >= 0f && u <= 1f && v >= 0f && v <= 1f;
+            if (!menuGrab && !menuScale && gripDown && !menuGripWas && onMenu && !Plugin.Config.MenuLocked) { menuGrab = true; menuGrabRel = PoseMul(PoseInv(HandR), menuPose); }
+            menuGripWas = gripDown;
+            if (!onMenu) return;
             PointerU = u; PointerV = v; PointerValid = true;
         }
 
@@ -965,7 +1458,7 @@ namespace SeVr.Xr
                 if (instance != 0) N.xrDestroyInstance(instance);
             }
             catch { }
-            swapchain = 0; session = 0; instance = 0; SessionRunning = false;
+            swapchain = 0; session = 0; instance = 0; SessionRunning = false; Failed = true;
         }
     }
 }

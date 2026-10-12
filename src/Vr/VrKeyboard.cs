@@ -147,14 +147,13 @@ namespace SeVr.Vr
             return new RectangleF(0.5f - w / 2f, 0.985f - h, w, h);
         }
 
-        /// <summary>Called from the renderer's HUD pass: draw the keyboard on the screen image.</summary>
+        /// <summary>The keyboard is a window of its own now (shown with the strip button below the menu window), no longer part of the menu screen.</summary>
         public static void DrawOnScreen(SharpDX.Direct3D11.Device dev, SharpDX.Direct3D11.DeviceContext ctx, SharpDX.Direct3D11.RenderTargetView rtv, int width, int height)
         {
-            if (KbTest) Visible = true;
-            if (!Visible) return;
-            if (!loggedDraw) { loggedDraw = true; Plugin.Log("keyboard: drawing on the screen image " + width + "x" + height); }
-            VrOverlay.DrawKeyboard(dev, ctx, rtv, width, height, ScreenRect(), Hover, PressedFlash);
         }
+
+        /// <summary>Shown with the keyboard button of the strip below the menu window; it floats freely and can be moved like the menu window.</summary>
+        public static volatile bool Shown;
 
         // ------------------------------------------------------------------ input (update thread)
 
@@ -175,34 +174,28 @@ namespace SeVr.Vr
         /// <summary>Menu is open: update visibility, hover and clicks. May switch off the mouse buttons so a click on a key does not reach the game.</summary>
         public static void Process(VRage.Input.MyVRageInput input, XrRuntime xr, ref MyMouseState ms)
         {
-            if ((checkCounter++ & 3) == 0)
-            {
-                object f;
-                bool tb = TextBoxFocused(out f);
-                if (hidden && !ReferenceEquals(f, hiddenFor)) hidden = false;     // another field: show again
-                Visible = tb && !hidden;
-                if (!Visible) Layer = Layer == 2 ? 2 : 0;
-            }
+            if (KbTest) Shown = true;                       // SEVR_KBTEST=1: always show it (for testing without a headset)
+            Visible = Shown;
             if (!loggedProcess) { loggedProcess = true; Plugin.Log("keyboard: process running (menu)"); }
-            if (KbTest) Visible = true;                     // SEVR_KBTEST=1: always show it (for testing without a headset)
             if (PressedFlash > 0f) PressedFlash = Math.Max(0f, PressedFlash - 0.08f);
             Hover = RectangleF.Empty;
-            bool trig = VrControls.TrigR > 0.5f;
+            if (!Shown) { prevTrigger = false; return; }
+
+            // the keyboard is a window of its own: the ray of either controller on it gives the position over the key image
+            float u, v; bool left = false;
+            if (!xr.PointAt(12, true, out u, out v)) { left = true; if (!xr.PointAt(12, false, out u, out v)) { prevTrigger = false; return; } }
+            bool trig = (left ? VrControls.TrigLRaw : VrControls.TrigRRaw) > 0.5f;
             bool rise = trig && !prevTrigger;
             prevTrigger = trig;
-            if (!Visible || !xr.PointerValid) return;
-
-            var sr = ScreenRect();
-            float u = xr.PointerU, v = xr.PointerV;
-            if (u < sr.X || u > sr.Right || v < sr.Y || v > sr.Bottom) return;
             ms.LeftButton = false; ms.RightButton = false;                          // the click belongs to the keyboard
+            xr.SetHudLaser(xr.PartPoint(12, u, v), left);
 
-            float bx = (u - sr.X) / sr.Width * BmpW, by = (v - sr.Y) / sr.Height * BmpH;
+            float bx = u * BmpW, by = v * BmpH;
             for (int ri = 0; ri < rows.Count; ri++)
                 foreach (var k in rows[ri])
                     if (k.Px.Contains(bx, by))
                     {
-                        Hover = new RectangleF(sr.X + k.Px.X / BmpW * sr.Width, sr.Y + k.Px.Y / BmpH * sr.Height, k.Px.Width / BmpW * sr.Width, k.Px.Height / BmpH * sr.Height);
+                        Hover = new RectangleF(k.Px.X / BmpW, k.Px.Y / BmpH, k.Px.Width / BmpW, k.Px.Height / BmpH);       // over the key image (0..1)
                         if (rise) Press(ri, k);
                         return;
                     }
@@ -221,7 +214,7 @@ namespace SeVr.Vr
                 case Kind.Enter: VrControls.ExternalPulse("kb_enter"); break;
                 case Kind.Left: VrControls.ExternalPulse("kb_left"); break;
                 case Kind.Right: VrControls.ExternalPulse("kb_right"); break;
-                case Kind.Hide: hidden = true; object f; TextBoxFocused(out f); hiddenFor = f; Visible = false; break;
+                case Kind.Hide: Shown = false; Visible = false; break;
             }
         }
 

@@ -1,5 +1,34 @@
 ﻿# Changelog
 
+## 0.5.0 (early access)
+
+New
+- **Hand menu** (default): status, tool bar, block info and indicators in one block at the left hand, opened with a small button on the back of the hand. No crosshair: what you can use or select is found with the right hand. `HudMode=rows` brings back the rows in front of you.
+- **Edit mode**: pick up any HUD part with the right grip, move it, scale it with the right stick and tie it to the hand, the head or its default place. Saved in the settings file.
+- **Buttons on the back of the hands**: Menu, Edit, Reset, Chat, K, G, I, ? (left hand), F10, Alt+F10, Shift+F10 (right hand). Pointed at with the other hand's laser; both hands have a laser.
+- **Cockpit HUD**: tool bar and a button bar (P landing gear, Z dampeners, L lights) fixed in the cockpit; every cockpit type keeps its own layout, also for the other HUD parts while seated.
+- **Help window** with the controls and hints, on by default, switched with the ? button.
+- Menu windows tilted like a tablet, a strip below them (size, lock, keyboard, page buttons for the G menu), a floating keyboard, and a production multiplier (x1 / x10 / x100 / x1000) in the terminal's production tab.
+- Body zone right of the head: A = key V, B = Escape. The chest zone only opens the inventory. Body zones also work in third person.
+- Touch: X and Y act at once (terminal and inventory have their own buttons); grip + right stick up is key F; the F10 combinations moved to the buttons on the right hand.
+- The monitor shows what you see in VR (`Mirror=vr`).
+- Online (not hosting): while firing, the character's head follows the hand's direction (`HandAimOnline`).
+- The turn stick eases in and out (`TurnSmooth`).
+- The helmet chip shows open / closed.
+
+Changed
+- The plugin is called **Space VR** (assembly `Space VR.dll`).
+- Settings, log and captures are stored in the game's user data folder (`MyFileSystem.UserDataPath`, follows `-appdata`).
+- The official OpenXR loader 1.1.63 is shipped (x64 release build of the Khronos package, Apache-2.0).
+- Plugin list entry: the loader is a file asset (`Placement="Bin"`), the plugin is limited to the .NET Framework runtime.
+- Performance: panels are repainted only when something changed, small parts share one swapchain.
+
+Fixed
+- The control table is rebuilt into new tables and swapped in, so a rebinding during a VR session cannot break the game's input thread.
+- When the OpenXR session cannot be created, the window gets its normal size and VSync back.
+- The marker colour icons are no longer written to the temp folder.
+- More than a dozen panels no longer exhaust the runtime's swapchain and layer limits.
+
 ## 0.4.0 (early access)
 
 New

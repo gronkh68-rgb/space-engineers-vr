@@ -17,6 +17,22 @@ namespace SeVr.Vr
     {
         public static Matrix MoveToBody = Matrix.Identity;   // stick vector (head frame) -> character's local axes
         public static bool Jetpack;               // jetpack running: the right stick pitches instead of moving up/down
+        /// <summary>Block type of the seat or cockpit the player sits in (for example Cockpit/LargeBlockCockpit); null when not seated. Updated every render frame.</summary>
+        public static volatile string SeatKey;
+        static string FindSeatKey()
+        {
+            try
+            {
+                var s = MySession.Static;
+                var ent = s != null && s.ControlledEntity != null ? s.ControlledEntity.Entity : null;
+                var blk = ent as Sandbox.Game.Entities.MyCubeBlock;
+                if (blk == null || !(ent is Sandbox.Game.Entities.MyShipController)) return null;
+                string id = blk.BlockDefinition.Id.ToString();
+                return id.StartsWith("MyObjectBuilder_") ? id.Substring(16) : id;
+            }
+            catch { return null; }
+        }
+
         public static bool OnFoot;                 // head-steered character (not in a seat, first person)
         public static Matrix BaseM = Matrix.Identity;
         public static Vector3 HeadRefPos;          // tracking-space position of the head when the base was set
@@ -25,7 +41,9 @@ namespace SeVr.Vr
         public static float PitchRateDegPerSec = 90f;
         public static float Gain = 0.35f;          // fraction of the remaining angle corrected per engine tick
         const bool UseCamAge = false;
-        public static float CamAge;               // seconds since the game's camera of the last frame was set (set by the renderer)
+        /// <summary>Direction (tracking space) the character's head should point to instead of the gaze, e.g. the right controller while firing online; null = the gaze.</summary>
+        public static Vector3? AimOverride;
+        public static float CamAge;              // seconds since the game's camera of the last frame was set (set by the renderer)
         static Vector3 EyeOffLocal, handOff;
         static bool handOffInit;
         static bool eyeOffLocalValid;
@@ -36,6 +54,7 @@ namespace SeVr.Vr
         static bool baseInit, refInit, havePrevRot;
         static Matrix prevRot;
         static Vector3 lastUp = Vector3.Up;
+        static float smTurn, smPitch;
         static int logCount;
 
         // degrees of body yaw / head pitch per rotation-indicator unit on foot (from MyCharacter.MoveAndRotateInternal)
@@ -43,6 +62,21 @@ namespace SeVr.Vr
         const float PitchDegPerUnit = 0.13f;
 
         public static void Reset() { baseInit = false; refInit = false; Inject = Vector2.Zero; }
+
+        /// <summary>The local character is controlled on foot, in first or third person (body zones also work in third person).</summary>
+        public static bool WalkingChar
+        {
+            get
+            {
+                try
+                {
+                    var s = MySession.Static;
+                    var c = s != null && s.ControlledEntity != null ? s.ControlledEntity.Entity as MyCharacter : null;
+                    return c != null && c == s.LocalCharacter && !c.IsDead;
+                }
+                catch { return false; }
+            }
+        }
 
         static MyCharacter FootCharacter()
         {
@@ -61,6 +95,7 @@ namespace SeVr.Vr
         /// <summary>Once per render frame, before the eyes are positioned.</summary>
         public static void BeginFrame(MatrixD camWorld, Matrix headLocal, Vector3 headLocalPos, float dt, float turnStick, float pitchStick)
         {
+            SeatKey = FindSeatKey();
             var ch = FootCharacter();
             if (!refInit) { HeadRefPos = headLocalPos; refInit = true; }
             else
@@ -163,6 +198,11 @@ namespace SeVr.Vr
             }
             lastUp = U;
 
+            // the stick eases in and out (TurnSmooth seconds): the turn speed does not jump with the stick, which is what made turning feel jerky
+            float ts = Plugin.Config.TurnSmooth;
+            if (ts > 0.001f) { float k = 1f - (float)Math.Exp(-dt / ts); smTurn += (turnStick - smTurn) * k; smPitch += (pitchStick - smPitch) * k; }
+            else { smTurn = turnStick; smPitch = pitchStick; }
+            turnStick = smTurn; pitchStick = smPitch;
             // thumbstick turning rotates the player about their up axis (right = clockwise seen from above)
             if (Math.Abs(turnStick) > 0.01f)
                 BaseM = BaseM * Matrix.CreateFromAxisAngle(U, -turnStick * TurnRateDegPerSec * dt * 0.017453292f);
@@ -192,9 +232,13 @@ namespace SeVr.Vr
             // closed loop: steer the engine's camera towards where the head points
             Vector3 fD = Vector3.Normalize(Vector3.TransformNormal(headLocal.Forward, BaseM));
             Vector3 fC = Vector3.Normalize((Vector3)camWorld.Forward);
-            float yawD = (float)Math.Atan2(Vector3.Dot(fD, bodyR), Vector3.Dot(fD, bodyF));
+            // Online (not hosting) the server shoots where the character's head points. While firing the head is steered to the hand's direction
+            // instead of the gaze (what you see does not depend on it: the view comes from the headset).
+            Vector3 fS = fD;
+            if (AimOverride.HasValue) { Vector3 ao = Vector3.TransformNormal(AimOverride.Value, BaseM); if (Valid(ao)) fS = Vector3.Normalize(ao); }
+            float yawD = (float)Math.Atan2(Vector3.Dot(fS, bodyR), Vector3.Dot(fS, bodyF));
             float yawC = (float)Math.Atan2(Vector3.Dot(fC, bodyR), Vector3.Dot(fC, bodyF));
-            float pitchD = (float)Math.Asin(MathHelper.Clamp(Vector3.Dot(fD, U), -1f, 1f));
+            float pitchD = (float)Math.Asin(MathHelper.Clamp(Vector3.Dot(fS, U), -1f, 1f));
             float pitchC = (float)Math.Asin(MathHelper.Clamp(Vector3.Dot(fC, U), -1f, 1f));
             float eYaw = MathHelper.WrapAngle(yawD - yawC) * 57.29578f;
             float ePitch = (pitchD - pitchC) * 57.29578f;

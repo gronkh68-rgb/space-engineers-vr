@@ -144,11 +144,13 @@ namespace SeVr.Vr
         static void ShiftPostfix(ref bool __result)
         {
             if (!__result && Gameplay && (VrControls.KeyLevel(MyKeys.LeftShift) || VrControls.KeyLevel(MyKeys.RightShift))) __result = true;
+            if (!__result && VrOwnHud.ForceShift && VrRenderer.Active) __result = true;      // production multiplier x10 / x1000
         }
 
         static void CtrlPostfix(ref bool __result)
         {
             if (!__result && Gameplay && (VrControls.KeyLevel(MyKeys.LeftControl) || VrControls.KeyLevel(MyKeys.RightControl))) __result = true;
+            if (!__result && VrOwnHud.ForceCtrl && VrRenderer.Active) __result = true;       // production multiplier x100 / x1000
         }
 
         static bool SetConnectedPrefix(string joystickInstanceName)
@@ -193,6 +195,11 @@ namespace SeVr.Vr
         static void KeyPressPostfix(MyKeys key, ref bool __result)
         {
             if (!__result && VrControls.KeyLevel(key) && (Gameplay || KeyboardKeys)) __result = true;
+            if (!__result && VrRenderer.Active)
+            {
+                if (VrOwnHud.ForceShift && (key == MyKeys.LeftShift || key == MyKeys.RightShift || key == MyKeys.Shift)) __result = true;
+                else if (VrOwnHud.ForceCtrl && (key == MyKeys.LeftControl || key == MyKeys.RightControl || key == MyKeys.Control)) __result = true;
+            }
         }
 
         static void KeyNewPressedPostfix(MyKeys key, ref bool __result)

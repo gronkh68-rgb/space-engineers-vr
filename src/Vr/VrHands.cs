@@ -56,6 +56,54 @@ namespace SeVr.Vr
             h.Patch(AccessTools.Method(t, "GetAimedPointFromHead"), postfix: new HarmonyMethod(typeof(VrHands).GetMethod(nameof(AimPointPostfix), BindingFlags.Static | BindingFlags.NonPublic)));
             h.Patch(AccessTools.Method(t, "GetAimedPointFromCamera"), postfix: new HarmonyMethod(typeof(VrHands).GetMethod(nameof(AimPointPostfix), BindingFlags.Static | BindingFlags.NonPublic)));
             h.Patch(AccessTools.Method(t, "UpdateHeadAndWeapon"), postfix: new HarmonyMethod(typeof(VrHands).GetMethod(nameof(Postfix), BindingFlags.Static | BindingFlags.NonPublic)));
+            InstallUseAim(h);
+        }
+
+        // ---- what the character can use or select (doors, terminals, cockpits, blocks) is found with a ray from the head; with HandAimUse it
+        // comes from the right controller instead. The detectors ask for the head matrix while they work, so that is what is replaced then.
+        [ThreadStatic] static bool inDetect;
+
+        static void InstallUseAim(Harmony h)
+        {
+            try
+            {
+                var asm = typeof(MyCharacter).Assembly;
+                var pre = new HarmonyMethod(typeof(VrHands).GetMethod(nameof(DetectPrefix), BindingFlags.Static | BindingFlags.NonPublic));
+                var fin = new HarmonyMethod(typeof(VrHands).GetMethod(nameof(DetectFinalizer), BindingFlags.Static | BindingFlags.NonPublic));
+                foreach (var tn in new[] { "MyCharacterClosestDetectorComponent", "MyCharacterRaycastDetectorComponent", "MyCharacterShapecastDetectorComponent" })
+                {
+                    var dt = asm.GetType("Sandbox.Game.Entities.Character.Components." + tn);
+                    if (dt == null) continue;
+                    foreach (var mi in dt.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly))
+                    {
+                        if (mi.Name != "DoDetection") continue;
+                        var body = mi.GetMethodBody();
+                        if (body == null || body.GetILAsByteArray().Length < 20) continue;
+                        h.Patch(mi, prefix: pre, finalizer: fin);
+                    }
+                }
+                var post = new HarmonyMethod(typeof(VrHands).GetMethod(nameof(HeadMatrixPostfix), BindingFlags.Static | BindingFlags.NonPublic));
+                foreach (var mi in typeof(MyCharacter).GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly))
+                    if (mi.Name == "GetHeadMatrix" && mi.ReturnType == typeof(MatrixD)) h.Patch(mi, postfix: post);
+            }
+            catch (Exception e) { Plugin.Log("use aim install: " + e.Message); }
+        }
+
+        static void DetectPrefix() { inDetect = true; }
+        static void DetectFinalizer() { inDetect = false; }
+
+        static void HeadMatrixPostfix(MyCharacter __instance, ref MatrixD __result)
+        {
+            if (!inDetect || !Plugin.Config.HandAimUse) return;
+            try
+            {
+                var s = MySession.Static;
+                var xr = XrRuntime.Instance;
+                if (!Driving || !VrRenderer.Active || xr == null || !xr.HandRValid || s == null || __instance != s.LocalCharacter) return;
+                MatrixD hand = VrHead.EyeWorldUpd(VrRenderer.PoseMatrix(xr.HandR));
+                __result = MatrixD.CreateWorld(hand.Translation, hand.Forward, hand.Up);
+            }
+            catch { }
         }
 
         static FieldInfo shootDirField;

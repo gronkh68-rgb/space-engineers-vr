@@ -52,6 +52,13 @@ namespace SeVr.Vr
             try
             {
                 if (billboard == null || !VrRenderer.Active) return true;
+                // thousands of billboards come by every frame (particles): everything that cannot be an overlay is let through at once
+                bool post = billboard.BlendType == MyBillboard.BlendTypeEnum.PostPP;       // overlays of mods are drawn after the post-processing
+                if (!post || billboard.CustomViewProjection >= 0)
+                {
+                    if (hud.Count > 0) lock (gate) hud.Remove(billboard);              // (billboards are pooled: this one may have been an overlay piece before)
+                    return true;
+                }
                 var cam = MySector.MainCamera;
                 if (cam == null) return true;
                 if (!BuildInfoSeen)
@@ -98,7 +105,7 @@ namespace SeVr.Vr
 
         static void Probe(MyBillboard billboard, double dist, bool flagged)
         {
-            if (lines > 60) return;
+            if (lines > 40 || !Plugin.Config.LogBillboards) return;
             string key = billboard.Material.ToString() + "|" + billboard.BlendType + "|" + (flagged ? "hud" : dist < 3.0 ? "near" : "far");
             if (!seen.Add(key)) return;
             lines++;

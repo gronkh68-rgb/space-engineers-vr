@@ -20,10 +20,25 @@ namespace SeVr
             public string[] Anchors = { "bottom2", "bottom2", "bottom", "bottom", "bottom", "bottom2", "view" };
             public bool GuideHands;                          // also draw the simple block hands (exactly at the controllers) to compare the character's hands with
             public float HandLead = 0f, HandSmooth = 0f, HandBack = 8f, HandDown = 1.5f, HudYaw = 0f;
+            public string HudMode = "hand";                  // rows: panels in rows below the view; wrist: status, indicators and tool bar on the left wrist, visible when you look at it; hand: one menu on the left hand, opened with a small button
+            public bool ZonesInSeat = false;                 // body zones also in a seat (they swallow the grips that roll the ship)
+            public string Mirror = "vr";                     // the monitor shows: vr (the left eye with the HUD panels where they are in the world) or game (left eye with the game's flat HUD)
+            public bool HandAimOnline = true;                // in online games (not hosting) the character's head is steered to the hand's direction while firing, so the server shoots there
+            public float MenuTilt = 25f, MenuHeight = -0.20f;      // the game's menu windows (terminal, inventory ...): tilted back like a tablet, below eye level
+            public bool LogBillboards;                       // writes a few lines about the overlay pieces of mods (BuildInfo ...) to the log (cfg only: LogBillboards=true)
+            public bool MenuLocked;                         // the menu window cannot be picked up and moved
+            public float MenuSide = 0f;                     // metres to the right (negative: left) of straight ahead; MenuDistance and MenuWidth are above
+            /// <summary>Where the player moved HUD parts to (edit mode): "part@mode" -> position x y z, rotation x y z w, scale (relative to the part's default place).</summary>
+            public System.Collections.Generic.Dictionary<string, float[]> Layout = new System.Collections.Generic.Dictionary<string, float[]>();
+            public bool HandAimUse = true;                  // what you can use or select (doors, terminals, cockpits, blocks) is found with the right controller's ray
+            public bool Crosshair = false;                  // the head-locked crosshair (the hand aims instead)
+            public float WristScale = 0.5f;                 // size of the wrist panels compared with the rows
             public float HudDistance = 1.0f;                 // metres: how far away the HUD floats (it keeps its apparent size)
             public float HudOpacity = 1f;                   // 0.15 - 1: how opaque the plugin's own HUD panels are
             public string ModHud = "hide";                   // overlays of mods drawn near the camera (BuildInfo ...): hide = blocked, float = in front of the head, game = left alone
             public float ModHudDistance = 0.9f, ModHudScale = 0.8f;                // milliseconds: hand targets are moved ahead by speed x this (hands trail behind at speed)
+            public float TurnSmooth = 0.12f;                // seconds the turn stick takes to ease in and out (0 = direct)
+            public bool Help = true;                        // the help window (controls and hints) is shown; the ? button on the left hand switches it
             public bool OwnHud = true;                      // the plugin draws status, tool bar and block info itself (false: pieces cut out of the game's HUD picture)
             public string ZonesOff = "";                     // comma separated zone names that are switched off (rhead, lhead, shoulder, lshoulder, chest, rhip, lhip)
             public bool LayoutV2;                            // set when the cfg file already has the bottom HUD layout (older files get the new defaults once)
@@ -36,7 +51,8 @@ namespace SeVr
             public System.Collections.Generic.Dictionary<string, string> Binds = new System.Collections.Generic.Dictionary<string, string>();   // source -> game control (or none)
         }
         internal static Cfg Config = new Cfg();
-        internal static string CfgPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "SpaceEngineers", "SeVr.cfg");
+        internal const string Tag = "SeVr";            // names the settings file, the log and the captures
+        internal static string CfgPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "SpaceEngineers", Tag + ".cfg");
         internal static string LogPath { get { return logPath; } }
 
         /// <summary>Pulsar shows a settings button for the plugin when it finds this method.</summary>
@@ -93,6 +109,16 @@ namespace SeVr
             sb.AppendLine("HandBackCm=" + Config.HandBack.ToString("0", ci));
             sb.AppendLine("# metres, 0.5 - 2.5: how far away the HUD floats (it keeps its apparent size)");
             sb.AppendLine("HudDistance=" + Config.HudDistance.ToString("0.##", ci));
+            sb.AppendLine("# rows (panels in rows below the view), wrist (status, indicators and tool bar on the left wrist, visible when you look at it) or hand (one menu on the left hand that turns with it, opened with a small button on the hand: point at it with the right hand and pull the trigger; point at the tool bar and pull the trigger to pick a slot)");
+            sb.AppendLine("HudMode=" + Config.HudMode);
+            sb.AppendLine("# true: what you can use or select (doors, terminals, cockpits, block highlight) is found with the right controller's ray instead of the head");
+            sb.AppendLine("HandAimUse=" + (Config.HandAimUse ? "true" : "false"));
+            sb.AppendLine("# true: a crosshair floats straight ahead of the head; false: nothing, you aim with the right hand");
+            sb.AppendLine("Crosshair=" + (Config.Crosshair ? "true" : "false"));
+            sb.AppendLine("# size of the wrist panels compared with the rows (0.3 - 1)");
+            sb.AppendLine("WristScale=" + Config.WristScale.ToString("0.##", ci));
+            sb.AppendLine("# true: body zones also work while sitting in a seat (they swallow the grips that roll the ship)");
+            sb.AppendLine("ZonesInSeat=" + (Config.ZonesInSeat ? "true" : "false"));
             sb.AppendLine("# 0.15 - 1: how opaque the plugin's own HUD panels are (1 = fully)");
             sb.AppendLine("HudOpacity=" + Config.HudOpacity.ToString("0.##", ci));
             sb.AppendLine("# hide (blocked), float (in front of the head) or game (left alone): overlays of mods that draw near the camera (BuildInfo ...); distance in metres and size of the floating layout");
@@ -108,7 +134,9 @@ namespace SeVr
             sb.AppendLine("# true: also draw the simple block hands at the controllers, to tune HandLead against the character's hands");
             sb.AppendLine("GuideHands=" + (Config.GuideHands ? "true" : "false"));
             sb.AppendLine("# true: status, tool bar and block info are drawn by the plugin itself; false: cut out of the game's HUD picture");
+            sb.AppendLine("TurnSmooth=" + Config.TurnSmooth.ToString("0.###", ci));
             sb.AppendLine("OwnHud=" + (Config.OwnHud ? "true" : "false"));
+            sb.AppendLine("Help=" + (Config.Help ? "true" : "false"));
             sb.AppendLine("# 2 = HUD parts in a row below the view (older files are moved to it once)");
             sb.AppendLine("HudLayout=2");
             sb.AppendLine("# seconds, 0 = off: smooths the eye point against head bone sway");
@@ -120,11 +148,23 @@ namespace SeVr
             sb.AppendLine("# floating menu: distance and width in metres");
             sb.AppendLine("MenuDistance=" + Config.MenuDistance.ToString("0.##", ci));
             sb.AppendLine("MenuWidth=" + Config.MenuWidth.ToString("0.##", ci));
+            sb.AppendLine("# the game's menu windows: tilt in degrees (0 = upright, positive = leaning back), height in metres relative to the eyes, side offset in metres");
+            sb.AppendLine("MenuTilt=" + Config.MenuTilt.ToString("0.#", ci));
+            sb.AppendLine("MenuHeight=" + Config.MenuHeight.ToString("0.##", ci));
+            sb.AppendLine("MenuSide=" + Config.MenuSide.ToString("0.##", ci));
+            sb.AppendLine("# the monitor shows: vr (what you see in VR: the left eye with the HUD panels) or game (left eye with the game's flat HUD)");
+            sb.AppendLine("Mirror=" + Config.Mirror);
+            sb.AppendLine("# true: in online games where you are not the host, the character's head follows the hand's direction while the right trigger is held, so shots go where you point");
+            sb.AppendLine("HandAimOnline=" + (Config.HandAimOnline ? "true" : "false"));
+            sb.AppendLine("# true: the game's menu windows cannot be moved (the lock button below the window)");
+            sb.AppendLine("MenuLocked=" + (Config.MenuLocked ? "true" : "false"));
+            sb.AppendLine("# where HUD parts were moved to in edit mode: Layout.<part>@<hud mode>=x,y,z,qx,qy,qz,qw,scale,attach (attach: 0 default place, 1 left hand, 2 head; delete the line to put a part back)");
+            foreach (var kv in Config.Layout) sb.AppendLine("Layout." + kv.Key + "=" + string.Join(",", System.Linq.Enumerable.Select(kv.Value, x => x.ToString("0.####", ci))));
             sb.AppendLine("# key bindings: Bind.<VR input>=<game control or none>, edited in the settings screen");
             foreach (var kv in Config.Binds) sb.AppendLine("Bind." + kv.Key + "=" + kv.Value);
             File.WriteAllText(CfgPath, sb.ToString());
         }
-        static string logPath = Path.Combine(Path.GetTempPath(), "SeVr.log");
+        static string logPath = Path.Combine(Path.GetTempPath(), Tag + ".log");
         Harmony harmony;
 
         [DllImport("kernel32", CharSet = CharSet.Unicode, SetLastError = true)]
@@ -216,12 +256,20 @@ namespace SeVr
             catch (Exception e) { Log("StartXr failed: " + e); }
         }
 
+        /// <summary>The game's user data folder (follows the -appdata argument), %AppData%\SpaceEngineers as a fallback.</summary>
+        internal static string DataDir()
+        {
+            try { string u = VRage.FileSystem.MyFileSystem.UserDataPath; if (!string.IsNullOrEmpty(u)) return u; } catch { }
+            return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "SpaceEngineers");
+        }
+
         public void Init(object gameInstance)
         {
-            var data = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "SpaceEngineers");
-            logPath = Path.Combine(data, "SeVr.log");
+            var data = DataDir();
+            try { Directory.CreateDirectory(data); } catch { }
+            logPath = Path.Combine(data, Tag + ".log");
             try { File.WriteAllText(logPath, ""); } catch { }
-            CfgPath = Path.Combine(data, "SeVr.cfg");
+            CfgPath = Path.Combine(data, Tag + ".cfg");
             LoadConfig(CfgPath);
             ApplyConfig();
             Log("Space Engineers VR " + Assembly.GetExecutingAssembly().GetName().Version + " starting");
@@ -263,7 +311,26 @@ namespace SeVr
                     if (k == "ZonesOff") Config.ZonesOff = v.ToLowerInvariant();
                     if (k == "HudLayout" && v == "2") Config.LayoutV2 = true;
                     if (k == "OwnHud") Config.OwnHud = v.ToLowerInvariant() != "false";
+                    if (k == "Help") Config.Help = v.ToLowerInvariant() != "false";
                     if (k == "GuideHands") Config.GuideHands = v.ToLowerInvariant() == "true";
+                    if (k == "HudMode") { var hm = v.ToLowerInvariant(); Config.HudMode = hm == "wrist" || hm == "hand" ? hm : "rows"; }
+                    if (k == "ZonesInSeat") Config.ZonesInSeat = v.ToLowerInvariant() != "false";
+                    if (k == "Crosshair") Config.Crosshair = v.ToLowerInvariant() != "false";
+                    if (k == "MenuLocked") Config.MenuLocked = v.ToLowerInvariant() == "true";
+                    if (k == "LogBillboards") Config.LogBillboards = v.ToLowerInvariant() == "true";
+                    if (k == "Mirror") Config.Mirror = v.ToLowerInvariant() == "vr" ? "vr" : "game";
+                    if (k == "HandAimOnline") Config.HandAimOnline = v.ToLowerInvariant() == "true";
+                    if (k == "HandAimUse") Config.HandAimUse = v.ToLowerInvariant() != "false";
+                    if (k.StartsWith("Layout.") && k.Length > 7)
+                    {
+                        var parts = v.Split(',');
+                        if (parts.Length == 8 || parts.Length == 9)
+                        {
+                            var arr = new float[9]; bool okl = true;       // [8]: 0 = relative to the default place, 1 = tied to the left hand, 2 = tied to the head
+                            for (int li = 0; li < parts.Length; li++) if (!float.TryParse(parts[li], NumberStyles.Float, CultureInfo.InvariantCulture, out arr[li])) okl = false;
+                            if (okl) Config.Layout[k.Substring(7)] = arr;
+                        }
+                    }
                     if (k == "ModHudMode") { var mv = v.ToLowerInvariant(); Config.ModHud = mv == "float" || mv == "game" ? mv : "hide"; }      // (the older key ModHud is ignored on purpose)
                     if (k == "Controller") Config.Controller = v.ToLowerInvariant();
                     for (int pi = 0; pi < Cfg.PartKeys.Length; pi++) if (k == Cfg.PartKeys[pi]) Config.Anchors[pi] = NormAnchor(v);
@@ -281,6 +348,10 @@ namespace SeVr
                         if (k == "HandLeadMs") Config.HandLead = Math.Max(0f, Math.Min(60f, fv));      // (the older key HandLead is ignored on purpose)
                         if (k == "HandBackCm") Config.HandBack = Math.Max(-15f, Math.Min(15f, fv));
                         if (k == "HudDistance") Config.HudDistance = Math.Max(0.5f, Math.Min(2.5f, fv));
+                        if (k == "MenuTilt") Config.MenuTilt = Math.Max(-10f, Math.Min(80f, fv));
+                        if (k == "MenuHeight") Config.MenuHeight = Math.Max(-1.2f, Math.Min(1f, fv));
+                        if (k == "MenuSide") Config.MenuSide = Math.Max(-2f, Math.Min(2f, fv));
+                        if (k == "WristScale") Config.WristScale = Math.Max(0.3f, Math.Min(1f, fv));
                         if (k == "HudOpacity") Config.HudOpacity = Math.Max(0.15f, Math.Min(1f, fv));
                         if (k == "ModHudDistance") Config.ModHudDistance = Math.Max(0.3f, Math.Min(3f, fv));
                         if (k == "ModHudScale") Config.ModHudScale = Math.Max(0.2f, Math.Min(2f, fv));
@@ -288,6 +359,7 @@ namespace SeVr
                         if (k == "HudYawDeg") Config.HudYaw = Math.Max(-30f, Math.Min(30f, fv));
                         if (k == "HandSmooth") Config.HandSmooth = Math.Max(0f, Math.Min(0.5f, fv));
                         if (k == "HandRoll") Config.HandRoll = Math.Max(-180f, Math.Min(180f, fv));
+                        if (k == "TurnSmooth") Config.TurnSmooth = Math.Max(0f, Math.Min(0.6f, fv));
                         if (k == "PanelSize") Config.PanelSize = Math.Max(0.12f, Math.Min(0.6f, fv));
                         if (k == "MenuWidth") Config.MenuWidth = Math.Max(0.6f, Math.Min(4f, fv));
                     }

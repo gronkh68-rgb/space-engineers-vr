@@ -41,6 +41,8 @@ namespace SeVr.Vr
         }
 
         /// <summary>Size in pixels of a part's panel; false when there is nothing to show for it right now.</summary>
+        static bool sample0, sample1;       // edit mode: block info and components shown as examples when no block is aimed at
+
         public static bool Prepare(int part, out int w, out int h)
         {
             w = h = 0;
@@ -64,30 +66,62 @@ namespace SeVr.Vr
                         if (rows.Count == 0) return false;
                         w = 440; h = 24 + rows.Count * 46;
                         return true;
+                    case 8:
+                        if (Plugin.Config.HudMode != "hand") return false;
+                        w = 240; h = 472;
+                        return true;
+                    case 15:
+                        if (!Plugin.Config.Help) return false;
+                        w = 1200; h = 376;
+                        return true;
+                    case 18:
+                        if (Plugin.Config.HudMode != "hand") return false;
+                        w = 112; h = 352;
+                        return true;
+                    case 11: w = 560; h = 112; return EditMode;
+                    case 13: w = GMenuOpen ? 960 : 480; h = 100; return true;
+                    case 14: w = 560; h = 96; return true;
                     case 5: return PrepareChat(out w, out h);
                     case 7: return PrepareNotes(out w, out h);
                     case 4:
                         BuildIndicators();
                         w = 440; h = 24 + 2 * 50 + 8 + lines.Count * 40;
                         return true;
+                    case 22:
+                        if (VrHead.SeatKey == null) return false;
+                        goto case 2;
+                    case 23:
+                        w = 400; h = 120; return VrHead.SeatKey != null;
                     case 2:
                         toolbar = MyToolbarComponent.CurrentToolbar;
                         if (toolbar == null) return false;
                         slotCount = Math.Min(9, toolbar.SlotCount);
                         if (slotCount <= 0) return false;
-                        w = 24 + slotCount * 104; h = 196;
+                        w = 24 + (slotCount + 1) * 104; h = 196;           // the slots and the empty-hand slot (0)
                         return true;
                     case 0:
                     {
                         var bi = MyHud.BlockInfo;
-                        if (bi == null || !bi.Visible || string.IsNullOrEmpty(bi.BlockName)) return false;
+                        sample0 = false;
+                        if (bi == null || !bi.Visible || string.IsNullOrEmpty(bi.BlockName))
+                        {
+                            if (!EditMode) return false;
+                            sample0 = true; w = 600; h = 148;           // in edit mode an example, so the part can be moved without aiming at a block
+                            return true;
+                        }
                         w = 600; h = IsWeaponBlock(bi) ? 104 : 148;
                         return true;
                     }
                     case 1:
                     {
                         var bi = MyHud.BlockInfo;
-                        if (bi == null || !bi.Visible || bi.Components == null || bi.Components.Count == 0) return false;
+                        sample1 = false;
+                        if (bi == null || !bi.Visible || bi.Components == null || bi.Components.Count == 0)
+                        {
+                            if (!EditMode) return false;
+                            sample1 = true; w = 600; h = 28 + 3 * 52;
+                            return true;
+                        }
                         int n = Math.Min(6, bi.Components.Count);
                         w = 600; h = 28 + n * 52;
                         return true;
@@ -147,7 +181,11 @@ namespace SeVr.Vr
                 }
                 if (cur.Length > 0 || first) flush();
             }
-            if (chatVis.Count == 0) return false;
+            if (chatVis.Count == 0)
+            {
+                if (!EditMode) return false;
+                chatVis.Add(new VisLine { Sender = "Chat:", Color = new VRageMath.Color(140, 220, 150), Text = "messages appear here", SenderW = VrOverlay.TextWidth("Chat:", ChatPx) + 10 });
+            }
             if (chatVis.Count > ChatMaxLines) chatVis.RemoveRange(0, chatVis.Count - ChatMaxLines);       // the oldest lines scroll off the top
             float widest = 0f;
             foreach (var l in chatVis) widest = Math.Max(widest, l.SenderW + VrOverlay.TextWidth(l.Text, ChatPx));
@@ -203,7 +241,11 @@ namespace SeVr.Vr
                     }
             }
             catch { }
-            if (notes.Count == 0) return false;
+            if (notes.Count == 0)
+            {
+                if (!EditMode) return false;
+                notes.Add(new NoteLine { Text = "Notifications appear here", R = TxR, G = TxG, B = TxB });
+            }
             w = 600; h = 20 + notes.Count * 44;
             return true;
         }
@@ -281,7 +323,9 @@ namespace SeVr.Vr
             chips.Add(new Chip { Label = "Dampeners", On = on(() => st.GetStat<MyStatControlledEntityDampeners>().CurrentValue) });
             chips.Add(new Chip { Label = "Light", On = on(() => st.GetStat<MyStatPlayerFlashlight>().CurrentValue) });
             chips.Add(new Chip { Label = "Antenna", On = on(() => st.GetStat<MyStatPlayerBroadcasting>().CurrentValue) || on(() => st.GetStat<MyStatControlledEntityBroadcasting>().CurrentValue) });
-            chips.Add(new Chip { Label = "Helmet", On = on(() => st.GetStat<MyStatPlayerHelmet>().CurrentValue) });
+            // the helmet says whether it is closed (the stat is 1 while the helmet is on)
+            bool helmetOn = on(() => st.GetStat<MyStatPlayerHelmet>().CurrentValue);
+            chips.Add(new Chip { Label = helmetOn ? "Helmet closed" : "Helmet open", On = helmetOn });
             chips.Add(new Chip { Label = "Jetpack", On = on(() => st.GetStat<MyStatPlayerJetpack>().CurrentValue) });
             chips.Add(new Chip { Label = "Mag boots", On = on(() => st.GetStat<MyStatPlayerMagBoots>().CurrentValue) });
 
@@ -325,7 +369,9 @@ namespace SeVr.Vr
                 VrOverlay.FillRect(x, y, cw, 42, c.On ? 30 : 18, c.On ? 72 : 28, c.On ? 50 : 38, 255);
                 VrOverlay.FrameRect(x, y, cw, 42, 2, c.On ? 110 : 60, c.On ? 214 : 84, c.On ? 140 : 104, 255);
                 VrOverlay.FillRect(x + 10, y + 15, 12, 12, c.On ? 120 : 70, c.On ? 230 : 90, c.On ? 150 : 100, 255);
-                VrOverlay.DrawText(c.Label, x + 27, y + 11, 18,c.On ? TxR : 130, c.On ? TxG : 150, c.On ? TxB : 170, 255);
+                int lpx = 18;
+                if (VrOverlay.TextWidth(c.Label, lpx) > cw - 32) lpx = 15;         // a long label gets a smaller font
+                VrOverlay.DrawText(c.Label, x + 27, y + 11 + (18 - lpx) / 2, lpx, c.On ? TxR : 130, c.On ? TxG : 150, c.On ? TxB : 170, 255);
             }
             float ly = 14 + 2 * 50 + 8;
             foreach (var l in lines)
@@ -334,6 +380,175 @@ namespace SeVr.Vr
                 VrOverlay.DrawText(l.Value, w - 20, ly + 4, 26, l.R, l.G, l.B, 255, 2);
                 ly += 40;
             }
+        }
+
+        // the hand menu: opened and closed with the small button on the hand
+        public static volatile bool MenuOpen = Environment.GetEnvironmentVariable("SEVR_MENUOPEN") == "1";     // test switch: start with the menu open
+        public static volatile bool ButtonHover;
+
+        // edit mode: the hand menu's buttons stay, every HUD part can be picked up with the right grip and moved (right stick up / down: size)
+        public static volatile bool EditMode;
+        public static int HoverButton = -1;         // which of the buttons 8 (menu), 9 (edit), 10 (reset) the right hand points at
+
+        // The buttons on the back of the hands. Ids (also the hover ids): 8 menu, 9 edit, 10 reset, 21 chat, 15 K, 16 G, 17 I (left hand); 18 F10, 19 Alt+F10, 20 Shift+F10 (right hand).
+        // Each cell is 112 x 112 pixels, 128 apart in the cluster's image.
+        static void Btn(int id, int x, int y)
+        {
+            const int w = 112, h = 112;
+            bool hov = HoverButton == id;
+            bool on = id == 8 ? MenuOpen : id == 9 ? EditMode : false;
+            bool edit = id == 9;
+            int r = on ? (edit ? 90 : 30) : 14, g = on ? (edit ? 60 : 90) : 30, b = on ? (edit ? 20 : 60) : 44;
+            VrOverlay.FillRect(x, y, w, h, r, g, b, 235);
+            VrOverlay.FrameRect(x, y, w, h, hov ? 8 : 5, hov ? 255 : edit ? 255 : 150, hov ? 255 : edit ? 170 : 210, hov ? 255 : edit ? 60 : 240, 255);
+            if (id == 8)
+                for (int i = 0; i < 3; i++) VrOverlay.FillRect(x + 26, y + 30 + i * 22, w - 52, 9, on ? 150 : 214, on ? 255 : 232, on ? 190 : 248, 255);       // the three lines of a menu
+            else if (id == 9) VrOverlay.DrawText("Edit", x + w / 2, y + 34, 40, 255, on ? 210 : 190, on ? 120 : 90, 255, 1);
+            else if (id == 10) VrOverlay.DrawText("Reset", x + w / 2, y + 38, 32, 255, 130, 110, 255, 1);
+            else if (id == 22) VrOverlay.DrawText("?", x + w / 2, y + 22, 64, Plugin.Config.Help ? 255 : 230, Plugin.Config.Help ? 220 : 240, Plugin.Config.Help ? 120 : 255, 255, 1);
+            else if (id == 21) VrOverlay.DrawText("Chat", x + w / 2, y + 34, 36, 230, 240, 255, 255, 1);
+            else if (id >= 15 && id <= 17) VrOverlay.DrawText(id == 15 ? "K" : id == 16 ? "G" : "I", x + w / 2, y + 22, 64, 230, 240, 255, 255, 1);       // keys: terminal, G menu, inventory
+            else if (id == 18) VrOverlay.DrawText("F10", x + w / 2, y + 34, 40, 255, 220, 140, 255, 1);
+            else
+            {
+                VrOverlay.DrawText(id == 19 ? "Alt" : "Shift", x + w / 2, y + 14, 34, 255, 220, 140, 255, 1);
+                VrOverlay.DrawText("F10", x + w / 2, y + 56, 40, 255, 220, 140, 255, 1);
+            }
+        }
+
+        static readonly string[] helpControls =
+        {
+            "L stick: move     R stick: turn",
+            "L click: sprint    R click: jetpack",
+            "Triggers: tool / second action",
+            "A jump   B crouch   X use   Y dampeners",
+            "Grip R + A B X Y: build planner",
+            "Grip + stick up: key F",
+            "Head R: trig light, grip helmet, A=V B=Esc",
+            "Head L: trig signals, grip broadcast",
+            "Chest trig: inventory   Shoulder grip: gear",
+            "L shoulder: trig build, grip HUD  Hips: hotbar",
+        };
+        static readonly string[] helpHints =
+        {
+            "Look at your left hand: Menu, Edit, Reset,",
+            "Chat, K G I (terminal, G menu, inventory)",
+            "Right hand: F10, Alt+F10, Shift+F10",
+            "Point with the other hand, pull the trigger",
+            "Menu: status, hotbar, block info",
+            "Edit: grip moves a part, R stick = size",
+            "Cockpit bar: P gear, Z dampeners, L light",
+            "Every cockpit type keeps its own layout",
+            "The ? on the left hand shows / hides this",
+        };
+
+        static void DrawHelp(int w, int h)
+        {
+            Panel(w, h);
+            VrOverlay.DrawText("CONTROLS", 24, 12, 30, 150, 200, 240, 255);
+            VrOverlay.DrawText("HINTS", 624, 12, 30, 150, 200, 240, 255);
+            for (int i = 0; i < helpControls.Length; i++) VrOverlay.DrawText(helpControls[i], 24, 52 + i * 31, 25, TxR, TxG, TxB, 255);
+            for (int i = 0; i < helpHints.Length; i++) VrOverlay.DrawText(helpHints[i], 624, 52 + i * 31, 25, TxR, TxG, TxB, 255);
+        }
+
+        static void DrawLeftCluster()
+        {
+            Btn(8, 0, 0); Btn(9, 0, 120);
+            if (EditMode) Btn(10, 0, 240);
+            Btn(21, 0, 360);
+            Btn(15, 128, 0); Btn(16, 128, 120); Btn(17, 128, 240); Btn(22, 128, 360);
+        }
+
+        static void DrawRightCluster() { Btn(18, 0, 0); Btn(19, 0, 120); Btn(20, 0, 240); }
+
+        /// <summary>Which button of cluster 8 or 18 lies under a point (pixels in the cluster's image); -1 for none.</summary>
+        public static int ClusterCell(int part, float px, float py)
+        {
+            int row = (int)(py / 120f);
+            if (py < 0 || row < 0 || py - row * 120 > 112) return -1;
+            if (part == 18) return px >= 0 && px <= 112 && row <= 2 ? 18 + row : -1;
+            int col = px >= 0 && px <= 112 ? 0 : px >= 128 && px <= 240 ? 1 : -1;
+            if (col < 0 || row > 3) return -1;
+            if (col == 0) { int id = row == 0 ? 8 : row == 1 ? 9 : row == 2 ? 10 : 21; return id == 10 && !EditMode ? -1 : id; }
+            return row <= 2 ? 15 + row : 22;
+        }
+
+        // ---- the strips: under a part in edit mode (size, hand, head, free), under the menu window (size, lock, keyboard, pages), above it (production multiplier)
+        public static int StripHover = -1;          // edit strip: which button the right hand points at (0 size, 1 hand, 2 head, 3 free)
+        public static int MenuStripHover = -1;      // menu strip: 0 size, 1 lock, 2 keyboard, 3 previous page, 5 next page
+        public static int ProdHover = -1;           // multiplier strip: 0 .. 3
+        public static volatile int ProdMultiplier = 1;
+        public static readonly int[] ProdValues = { 1, 10, 100, 1000 };
+        /// <summary>x10 holds Ctrl, x100 holds Shift, x1000 both: the production window reads them as if the keys were down.</summary>
+        public static bool ForceShift { get { int m = ProdMultiplier; return m == 100 || m == 1000; } }
+        public static bool ForceCtrl { get { int m = ProdMultiplier; return m == 10 || m == 1000; } }
+        public static volatile bool GMenuOpen;          // the G menu (tool bar and block selection) has focus: only there the page arrows are shown
+        public static volatile bool LeftAim;            // the left hand points at a HUD target: its trigger belongs to that, not to the tool
+
+        static void Cell(int i, int n, int w, int h, bool hot, bool hov, string text, int px)
+        {
+            float cw = (w - 16f) / n, x = 8 + i * cw;
+            VrOverlay.FillRect(x + 3, 8, cw - 6, h - 16, hot ? 28 : 18, hot ? 90 : 34, hot ? 60 : 50, 255);
+            VrOverlay.FrameRect(x + 3, 8, cw - 6, h - 16, hov ? 5 : 3, hov ? 255 : hot ? 120 : LnR, hov ? 255 : hot ? 230 : LnG, hov ? 255 : hot ? 150 : LnB, 255);
+            VrOverlay.DrawText(text, x + cw / 2, h / 2f - px * 0.62f, px, TxR, TxG, TxB, 255, 1);
+        }
+
+        static void DrawEditStrip(int w, int h)
+        {
+            int focus = -1, att = 0;
+            try { var xr = SeVr.Xr.XrRuntime.Instance; if (xr != null) { focus = xr.FocusPart; att = focus >= 0 ? xr.AttachOf(focus) : 0; } } catch { }
+            VrOverlay.FillRect(0, 0, w, h, BgR, BgG, BgB, 215);
+            Cell(0, 4, w, h, false, StripHover == 0, "Size", 30);
+            Cell(1, 4, w, h, att == 1, StripHover == 1, "Hand", 30);
+            Cell(2, 4, w, h, att == 2, StripHover == 2, "Head", 30);
+            Cell(3, 4, w, h, att == 0, StripHover == 3, "Free", 30);
+            VrOverlay.DrawText("Size: hold the grip and move the hand sideways", w / 2, h - 22, 18, 170, 200, 228, 255, 1);
+        }
+
+        public static int MenuStripCells { get { return GMenuOpen ? 6 : 3; } }       // size, lock, keyboard (+ pages in the G menu)
+
+        static void DrawMenuStrip(int w, int h)
+        {
+            VrOverlay.FillRect(0, 0, w, h, BgR, BgG, BgB, 215);
+            bool locked = Plugin.Config.MenuLocked;
+            int cells = MenuStripCells;
+            Cell(0, cells, w, h, false, MenuStripHover == 0, "Size", 30);
+            // the lock: a padlock, closed when the window cannot be moved
+            {
+                float cw = (w - 16f) / cells, x = 8 + 1 * cw;
+                bool hov = MenuStripHover == 1;
+                VrOverlay.FillRect(x + 3, 8, cw - 6, h - 16, locked ? 90 : 18, locked ? 50 : 34, locked ? 30 : 50, 255);
+                VrOverlay.FrameRect(x + 3, 8, cw - 6, h - 16, hov ? 5 : 3, hov ? 255 : locked ? 255 : LnR, hov ? 255 : locked ? 170 : LnG, hov ? 255 : locked ? 80 : LnB, 255);
+                float cx = x + cw / 2f, by = h / 2f - 4;
+                VrOverlay.FillRect(cx - 17, by, 34, 26, TxR, TxG, TxB, 255);                                   // body
+                float sy = locked ? by - 20 : by - 28;                                                          // shackle (lifted when open)
+                VrOverlay.FillRect(cx - 12, sy, 5, 22, TxR, TxG, TxB, 255);
+                VrOverlay.FillRect(cx + 7, sy + (locked ? 0 : 6), 5, locked ? 22 : 16, TxR, TxG, TxB, 255);
+                VrOverlay.FillRect(cx - 12, sy - 4, 24, 5, TxR, TxG, TxB, 255);
+            }
+            Cell(2, cells, w, h, VrKeyboard.Shown, MenuStripHover == 2, "Keys", 30);
+            if (cells == 6)
+            {
+                Cell(3, 6, w, h, false, MenuStripHover == 3, "<", 36);
+                int page = 0, pages = 0;
+                try { var tb = MyToolbarComponent.CurrentToolbar; if (tb != null) { page = tb.CurrentPage; pages = tb.PageCount; } } catch { }
+                VrOverlay.DrawText(pages > 0 ? (page + 1) + "/" + pages : "", 8 + 4 * ((w - 16f) / 6f) + ((w - 16f) / 12f), h / 2f - 20, 30, 170, 200, 228, 255, 1);
+                Cell(5, 6, w, h, false, MenuStripHover == 5, ">", 36);
+            }
+        }
+
+        static void DrawProdStrip(int w, int h)
+        {
+            VrOverlay.FillRect(0, 0, w, h, BgR, BgG, BgB, 215);
+            for (int i = 0; i < 4; i++) Cell(i, 4, w, h, ProdMultiplier == ProdValues[i], ProdHover == i, "x" + ProdValues[i], 34);
+        }
+
+        static void EditFrame(int part, int w, int h)
+        {
+            if (!EditMode) return;
+            bool hv = false;
+            try { var xr = SeVr.Xr.XrRuntime.Instance; hv = xr != null && xr.EditHoverPart == part; } catch { }
+            VrOverlay.FrameRect(5, 5, w - 10, h - 10, hv ? 9 : 4, 255, hv ? 200 : 150, 40, 255);
         }
 
         static void Panel(int w, int h)
@@ -348,19 +563,52 @@ namespace SeVr.Vr
         {
             try
             {
+                if (part == 8) { DrawLeftCluster(); return; }
+                if (part == 18) { DrawRightCluster(); return; }
+                if (part == 11) { DrawEditStrip(w, h); return; }
+                if (part == 13) { DrawMenuStrip(w, h); return; }
+                if (part == 14) { DrawProdStrip(w, h); return; }
                 Panel(w, h);
+                EditFrame(part, w, h);
                 switch (part)
                 {
                     case 3: DrawStatus(w, h); break;
                     case 4: DrawIndicators(w, h); break;
                     case 5: DrawChat(w, h); break;
                     case 7: DrawNotes(w, h); break;
-                    case 2: DrawToolbar(w, h); break;
+                    case 2: case 22: DrawToolbar(w, h); break;
+                    case 23: DrawSeatBar(w, h); break;
+                    case 15: DrawHelp(w, h); break;
                     case 0: DrawInfo(w, h); break;
                     case 1: DrawComponents(w, h); break;
                 }
             }
             catch (Exception e) { Plugin.Log("own hud draw " + part + ": " + e.Message); }
+        }
+
+        public static int SeatHover = -1;           // the cockpit button bar: which button a hand points at
+        public static volatile bool SeatAim;        // a hand points at the cockpit HUD: the trigger belongs to that, not to the ship's weapons
+        static readonly string[] seatKeys = { "P", "Z", "L" };
+        static readonly string[] seatNames = { "Gear", "Damp", "Light" };
+        static bool ShipDamping()
+        {
+            try { var sc = Sandbox.Game.World.MySession.Static.ControlledEntity; return sc != null && sc.EnabledDamping; }
+            catch { return false; }
+        }
+
+        static void DrawSeatBar(int w, int h)
+        {
+            VrOverlay.FillRect(0, 0, w, h, BgR, BgG, BgB, 215);
+            bool damp = ShipDamping();
+            for (int i = 0; i < 3; i++)
+            {
+                float cw = (w - 16f) / 3, x = 8 + i * cw;
+                bool hot = i == 1 && damp, hov = SeatHover == i;
+                VrOverlay.FillRect(x + 3, 8, cw - 6, h - 16, hot ? 28 : 18, hot ? 90 : 34, hot ? 60 : 50, 255);
+                VrOverlay.FrameRect(x + 3, 8, cw - 6, h - 16, hov ? 5 : 3, hov ? 255 : hot ? 120 : LnR, hov ? 255 : hot ? 230 : LnG, hov ? 255 : hot ? 150 : LnB, 255);
+                VrOverlay.DrawText(seatKeys[i], x + cw / 2, 14, 48, TxR, TxG, TxB, 255, 1);
+                VrOverlay.DrawText(seatNames[i], x + cw / 2, 70, 24, 170, 200, 228, 255, 1);
+            }
         }
 
         static void DrawStatus(int w, int h)
@@ -380,6 +628,38 @@ namespace SeVr.Vr
                 y += 46;
             }
         }
+
+        // pointing at the tool bar with the right hand (wrist HUD): slot under the pointer (-1 none), pointer position over the panel (0..1), and
+        // whether the right hand points at the tool bar at all (then the trigger picks a slot instead of using the tool)
+        public static int HoverSlot = -1;
+        public static float PointerU = -1f, PointerV = -1f;
+        public static volatile bool HotbarHover;
+
+        /// <summary>The slot at a position of the tool bar panel in pixels (-1 between slots).</summary>
+        public const int PagePrevCode = 100, PageNextCode = 101;
+
+        /// <summary>
+        /// What is at a position of the tool bar panel in pixels: a slot (0 .. slots-1), the empty-hand slot (= slots), the previous / next page
+        /// arrows (PagePrevCode, PageNextCode), or -1.
+        /// </summary>
+        public static int SlotAt(float px, float py, int w, int slots)
+        {
+            if (py >= 6f && py <= 56f)
+            {
+                if (px >= w - 134 && px <= w - 82) return PagePrevCode;
+                if (px >= w - 76 && px <= w - 24) return PageNextCode;
+                return -1;
+            }
+            if (py < 62f || py > 62f + 96f) return -1;
+            for (int i = 0; i <= slots; i++)
+            {
+                float x = 20 + i * 104;
+                if (px >= x - 4 && px <= x + 96 + 4) return i;
+            }
+            return -1;
+        }
+
+        public static int SlotCount { get { return slotCount; } }
 
         static void DrawToolbar(int w, int h)
         {
@@ -409,16 +689,50 @@ namespace SeVr.Vr
                     catch { }
                 }
                 VrOverlay.DrawText((i + 1).ToString(), x + 8, y + 2, 22, 170, 200, 228, 255);
+                if (i == HoverSlot) VrOverlay.FrameRect(x - 3, y - 3, s + 6, s + 6, 5, 255, 255, 255, 255);          // the slot the right hand points at
+            }
+            if (PointerU >= 0f && HotbarHover)
+            {
+                float px = PointerU * w, py = PointerV * h;
+                VrOverlay.FillRect(px - 9, py - 9, 18, 18, 0, 0, 0, 255);
+                VrOverlay.FillRect(px - 6, py - 6, 12, 12, 255, 255, 255, 255);
+            }
+            // the empty-hand slot (key 0)
+            {
+                float x = 20 + slotCount * 104, y = 62, s = 96;
+                bool on = sel < 0;
+                VrOverlay.FillRect(x, y, s, s, on ? 40 : 20, on ? 70 : 36, on ? 100 : 52, on ? 255 : 235);
+                VrOverlay.FrameRect(x, y, s, s, on ? 4 : 2, on ? 150 : LnR, on ? 210 : LnG, on ? 255 : LnB, 255);
+                VrOverlay.DrawText("0", x + 8, y + 2, 22, 170, 200, 228, 255);
+                VrOverlay.DrawText("Empty", x + s / 2, y + 36, 22, TxR, TxG, TxB, 255, 1);
+                VrOverlay.DrawText("hand", x + s / 2, y + 58, 22, TxR, TxG, TxB, 255, 1);
+                if (HoverSlot == slotCount) VrOverlay.FrameRect(x - 3, y - 3, s + 6, s + 6, 5, 255, 255, 255, 255);
             }
             string head = selName;
             int pageCount = 0, page = 0;
             try { pageCount = tb.PageCount; page = tb.CurrentPage; } catch { }
-            if (pageCount > 1) VrOverlay.DrawText("Page " + (page + 1) + " / " + pageCount, w - 20, 12, 24, 170, 200, 228, 255, 2);
-            if (!string.IsNullOrEmpty(head)) VrOverlay.DrawText(head, 22, 12, 30, TxR, TxG, TxB, 255);
+            // page arrows
+            for (int a = 0; a < 2; a++)
+            {
+                float ax = a == 0 ? w - 134 : w - 76;
+                bool hov = HoverSlot == (a == 0 ? PagePrevCode : PageNextCode);
+                VrOverlay.FillRect(ax, 8, 52, 44, hov ? 50 : 22, hov ? 90 : 40, hov ? 120 : 58, 255);
+                VrOverlay.FrameRect(ax, 8, 52, 44, hov ? 4 : 2, hov ? 255 : LnR, hov ? 255 : LnG, hov ? 255 : LnB, 255);
+                VrOverlay.DrawText(a == 0 ? "<" : ">", ax + 26, 10, 34, TxR, TxG, TxB, 255, 1);
+            }
+            if (pageCount > 1) VrOverlay.DrawText((page + 1) + " / " + pageCount, w - 146, 14, 26, 170, 200, 228, 255, 2);
+            if (!string.IsNullOrEmpty(head)) VrOverlay.DrawText(Fit(head, 30, w - 330), 22, 12, 30, TxR, TxG, TxB, 255);
         }
 
         static void DrawInfo(int w, int h)
         {
+            if (sample0)
+            {
+                VrOverlay.DrawText("Block info (example)", 24, 16, 34, TxR, TxG, TxB, 255);
+                VrOverlay.FillRect(24, 74, w - 48, 20, 28, 44, 60, 255); VrOverlay.FillRect(24, 74, (w - 48) * 0.7f, 20, 110, 210, 120, 255);
+                VrOverlay.DrawText("shown when you aim at a block", 24, 104, 22, 150, 186, 220, 255);
+                return;
+            }
             var bi = MyHud.BlockInfo;
             float x = 18;
             var icons = bi.BlockIcons;
@@ -458,6 +772,15 @@ namespace SeVr.Vr
 
         static void DrawComponents(int w, int h)
         {
+            if (sample1)
+            {
+                for (int i = 0; i < 3; i++)
+                {
+                    VrOverlay.DrawText("Component " + (i + 1) + " (example)", 24, 20 + i * 52, 26, TxR, TxG, TxB, 255);
+                    VrOverlay.DrawText((i + 1) + " / 4", w - 24, 20 + i * 52, 26, 120, 214, 140, 255, 2);
+                }
+                return;
+            }
             var bi = MyHud.BlockInfo;
             var list = bi.Components;
             int n = Math.Min(6, list.Count);

@@ -21,7 +21,7 @@ namespace SeVr
         static readonly string[] Labels =
         {
             "Right head (light, helmet)", "Left head (GPS markers, O)", "Right shoulder", "Left shoulder (G menu)",
-            "Chest (inventory, K menu)", "Right hip", "Left hip"
+            "Chest (inventory)", "Right hip", "Left hip"
         };
 
         const float RowH = 0.05f;

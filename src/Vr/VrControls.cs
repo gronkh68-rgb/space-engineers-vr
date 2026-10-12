@@ -29,9 +29,9 @@ namespace SeVr.Vr
 
         static readonly object gate = new object();
         static readonly Dictionary<string, Src> src = new Dictionary<string, Src>();
-        static readonly Dictionary<MyStringId, List<ControlRow>> byControl = new Dictionary<MyStringId, List<ControlRow>>();
-        static readonly Dictionary<VRage.Input.MyKeys, List<ControlRow>> byKey = new Dictionary<VRage.Input.MyKeys, List<ControlRow>>();
-        static bool built;
+        static volatile Dictionary<MyStringId, List<ControlRow>> byControl = new Dictionary<MyStringId, List<ControlRow>>();
+        static volatile Dictionary<VRage.Input.MyKeys, List<ControlRow>> byKey = new Dictionary<VRage.Input.MyKeys, List<ControlRow>>();
+        static volatile bool built;
 
         public static bool KeyLevel(VRage.Input.MyKeys k) { return KeyState(k, 0); }
         public static bool KeyNewPressed(VRage.Input.MyKeys k) { return KeyState(k, 1); }
@@ -54,7 +54,7 @@ namespace SeVr.Vr
         // raw button levels set by the XR layer
         static readonly Dictionary<string, bool> raw = new Dictionary<string, bool>();
         static float xDown, yDown;      // seconds the X / Y buttons have been held
-        static bool xHoldFired, yHoldFired;
+        static bool xHoldFired, yHoldFired, xPrevTouch, yPrevTouch;
         const float HoldSeconds = 0.45f;
 
         static Src S(string name)
@@ -67,7 +67,9 @@ namespace SeVr.Vr
         static void Build()
         {
             if (built) return;
-            built = true;
+            // filled into new tables and swapped in at the end, so the update thread never reads a half-built table
+            var byControl = new Dictionary<MyStringId, List<ControlRow>>();
+            var byKey = new Dictionary<VRage.Input.MyKeys, List<ControlRow>>();
             var t = typeof(MyControlsSpace);
             foreach (var row0 in ControlMap.Rows)
             {
@@ -98,12 +100,14 @@ namespace SeVr.Vr
                 list.Add(row);
                 S(row.Source);
             }
+            VrControls.byControl = byControl; VrControls.byKey = byKey;
+            built = true;
         }
 
         /// <summary>Read the control table again (after the player changed a binding).</summary>
         public static void Rebuild()
         {
-            lock (gate) { built = false; byControl.Clear(); byKey.Clear(); }
+            built = false;
         }
 
         // ------------------------------------------------------------ writers (render thread)
@@ -130,11 +134,13 @@ namespace SeVr.Vr
         }
 
         public static float DeadZone = 0.18f;
+        /// <summary>The right trigger as the controller reports it (TrigR can be zeroed by a zone or by pointing at the wrist tool bar).</summary>
+        public static float TrigRRaw, TrigLRaw;
 
         public static void SetFloat(string name, float v)
         {
-            if (name == "trigger_l") TrigL = Math.Max(TrigL, v);
-            else if (name == "trigger_r") TrigR = Math.Max(TrigR, v);
+            if (name == "trigger_l") { TrigL = Math.Max(TrigL, v); TrigLRaw = TrigL; }
+            else if (name == "trigger_r") { TrigR = Math.Max(TrigR, v); TrigRRaw = TrigR; }
             else if (name == "grip_l") GripL = Math.Max(GripL, v);
             else if (name == "grip_r") GripR = Math.Max(GripR, v);
         }
@@ -180,7 +186,11 @@ namespace SeVr.Vr
                 var xr = Xr.XrRuntime.Instance;
                 bool touchStyle = xr != null && !xr.IsFrameController;
                 bool menuOpen = xr != null && MenuState.IsMenuOpen();
-                bool zones = xr != null && !menuOpen && ZonesWanted(touchStyle);
+                bool editing = VrOwnHud.EditMode && !menuOpen;
+                bool zones = xr != null && !menuOpen && !editing && ZonesWanted(touchStyle) && (VrHead.OnFoot || VrHead.WalkingChar || Plugin.Config.ZonesInSeat);
+                // pointing at the wrist tool bar or a button, or moving HUD parts: the trigger must not use the tool as well
+                if ((VrOwnHud.HotbarHover || VrOwnHud.ButtonHover || VrOwnHud.SeatHover >= 0 || editing) && !menuOpen) TrigR = 0f;
+                if (VrOwnHud.LeftAim) TrigL = 0f;                      // the left hand points at a HUD target: its trigger belongs to that
                 if (zones)
                 {
                     VrZones.Update(xr);
@@ -188,7 +198,7 @@ namespace SeVr.Vr
                     ZoneHand(false, xr, VrZones.ZoneR, ref TrigR, ref GripR, ref prevZoneR, ref tHeldR, ref gHeldR);
                 }
                 else { prevZoneL = prevZoneR = VrZones.Zone.None; tHeldL = tHeldR = gHeldL = gHeldR = false; }
-                if (touchStyle && !menuOpen && VrHead.OnFoot && (GripL > 0.65f || GripR > 0.65f))
+                if (touchStyle && !menuOpen && !editing && VrHead.OnFoot && (GripL > 0.65f || GripR > 0.65f))
                 {
                     float sx = TurnX, sy = TurnY;
                     bool vert = Math.Abs(sy) >= Math.Abs(sx);
@@ -197,11 +207,14 @@ namespace SeVr.Vr
                     TurnX = 0f; TurnY = 0f;                        // the stick is a D-pad while a grip is held
                 }
 
+                // right hand at the head: A = V, B = Escape (their normal jump / crouch are switched off meanwhile)
+                bool headAB = zones && VrZones.ZoneR == VrZones.Zone.RHead;
+                raw["z_rhead_a"] = headAB && Raw("jump"); raw["z_rhead_b"] = headAB && Raw("crouch");
+                if (headAB) { raw["jump"] = false; raw["crouch"] = false; }
+                EdgePulse("z_rhead_a", now, 0.35); EdgePulse("z_rhead_b", now, 0.35);
                 // Right grip held on foot: D-pad sends F10 / Alt+F10 / Shift+F10 / Ctrl+F10, A / B / X / Y drive the build planner.
                 // The normal actions of those buttons are switched off meanwhile.
-                bool combo = VrHead.OnFoot && GripR > 0.65f;
-                raw["combo_up"] = combo && Raw("dpad_up"); raw["combo_down"] = combo && Raw("dpad_down");
-                raw["combo_left"] = combo && Raw("dpad_left"); raw["combo_right"] = combo && Raw("dpad_right");
+                bool combo = VrHead.OnFoot && GripR > 0.65f && !editing;
                 raw["pl_a"] = combo && Raw("jump"); raw["pl_b"] = combo && Raw("crouch");
                 raw["pl_x"] = combo && (Raw("fx") || Raw("x")); raw["pl_y"] = combo && (Raw("fy") || Raw("y"));
                 if (combo)
@@ -209,7 +222,7 @@ namespace SeVr.Vr
                     raw["dpad_up"] = false; raw["dpad_down"] = false; raw["dpad_left"] = false; raw["dpad_right"] = false;
                     raw["jump"] = false; raw["crouch"] = false; raw["fx"] = false; raw["x"] = false; raw["fy"] = false; raw["y"] = false;
                 }
-                foreach (var cn in new[] { "combo_up", "combo_down", "combo_left", "combo_right", "pl_a", "pl_b", "pl_x", "pl_y" }) EdgePulse(cn, now, 0.35);
+                foreach (var cn in new[] { "pl_a", "pl_b", "pl_x", "pl_y" }) EdgePulse(cn, now, 0.35);
                 bool bx = Raw("fx") || Raw("x"), bb = Raw("crouch"), by = Raw("fy") || Raw("y");
                 // jetpack without a block in hand: freeze grip + D-pad left/right = Q/E roll
                 bool rollMode = !BuildMode && VrHead.OnFoot && VrHead.Jetpack && GripL > 0.65f;
@@ -217,6 +230,8 @@ namespace SeVr.Vr
                 if (rollMode) { raw["dpad_left"] = false; raw["dpad_right"] = false; }
                 ZoomIn = BuildMode && Raw("dpad_up"); ZoomOut = BuildMode && Raw("dpad_down");
                 if (BuildMode) { raw["dpad_up"] = false; raw["dpad_down"] = false; }
+                // Touch: grip + stick keeps only F (up) as a key; Z / L / J are covered by the body zones (roll and build zoom above still use the stick)
+                if (touchStyle) { raw["dpad_down"] = false; raw["dpad_left"] = false; raw["dpad_right"] = false; }
                 raw["menu_back"] = bb || Raw("view") || Raw("menu");
                 raw["blk_prev"] = BuildMode && bx; raw["blk_next"] = BuildMode && bb; raw["color_menu"] = BuildMode && by;
                 if (BuildMode) { raw["crouch"] = false; raw["fx"] = false; raw["fy"] = false; raw["x"] = false; raw["y"] = false; }
@@ -239,8 +254,19 @@ namespace SeVr.Vr
                 EdgePulse("view", now, 0.4); EdgePulse("fx", now, 0.35); EdgePulse("fy", now, 0.35);
 
                 // X: tap = use, hold = terminal.   Y: tap = dampeners, hold = inventory
-                Hold(Raw("x"), ref xDown, ref xHoldFired, dt, "x_tap", "x_hold");
-                Hold(Raw("y"), ref yDown, ref yHoldFired, dt, "y_tap", "y_hold");
+                // Touch (Quest ...): the terminal and the inventory have their own wrist buttons (K, I) and body zones, so X and Y only do one thing each
+                if (touchStyle)
+                {
+                    bool xn = Raw("x"), yn = Raw("y");
+                    if (xn && !xPrevTouch) Pulse("x_tap");
+                    if (yn && !yPrevTouch) Pulse("y_tap");
+                    xPrevTouch = xn; yPrevTouch = yn; xDown = yDown = 0f; xHoldFired = yHoldFired = false;
+                }
+                else
+                {
+                    Hold(Raw("x"), ref xDown, ref xHoldFired, dt, "x_tap", "x_hold");
+                    Hold(Raw("y"), ref yDown, ref yHoldFired, dt, "y_tap", "y_hold");
+                }
             }
         }
 

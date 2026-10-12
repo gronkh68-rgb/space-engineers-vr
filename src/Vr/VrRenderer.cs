@@ -23,6 +23,7 @@ namespace SeVr.Vr
         static PropertyInfo deviceInstance, backbufferProp, rcProp, deviceSettingsProp;
         static FieldInfo mainSpritesFc;
         static object lastCameraMsg;          // cloned MyRenderMessageSetCameraViewMatrix
+        static MyRenderDeviceSettings? origSettings;
         static bool sessionTried, sizeRequested, sizeApplied, dbgApplied;
         public static bool Active;            // true while a VR frame is being produced
         public static float MenuDistance = 1.4f;
@@ -89,7 +90,7 @@ namespace SeVr.Vr
         {
             try
             {
-                if (!settingsToTry.HasValue || XrRuntime.Instance == null) return;
+                if (!settingsToTry.HasValue || XrRuntime.Instance == null || XrRuntime.Instance.Failed) return;
                 var s = settingsToTry.Value;
                 ApplySize(ref s);
                 settingsToTry = s;
@@ -117,6 +118,23 @@ namespace SeVr.Vr
         }
 
         static long camStamp;
+        /// <summary>
+        /// Playing online as a client, the server decides where shots go from the character's head direction. While the right trigger is held
+        /// (and the hands are driven) the head steering aims at the right controller's direction; null otherwise.
+        /// </summary>
+        static Vector3? OnlineAimDirection(XrRuntime xr)
+        {
+            try
+            {
+                if (!Plugin.Config.HandAimOnline || !xr.HandRValid || !VrHands.Driving) return null;
+                if (!Sandbox.Game.Multiplayer.Sync.MultiplayerActive || Sandbox.Game.Multiplayer.Sync.IsServer) return null;
+                if (VrControls.TrigRRaw < 0.4f) return null;
+                var q = xr.HandR.orientation;
+                return Vector3.Transform(new Vector3(0f, 0f, -1f), new Quaternion(q.x, q.y, q.z, q.w));
+            }
+            catch { return null; }
+        }
+
         public static Matrix PoseMatrix(N.Pose p) { return FromPose(p); }
         public static MatrixD CamWorld { get { return camWorldCache; } }
 
@@ -194,6 +212,7 @@ namespace SeVr.Vr
                     if (!sizeRequested)
                     {
                         var ds = CurrentSettings();
+                        origSettings = ds;
                         ApplySize(ref ds);
                         sizeRequested = true;
                         Plugin.Log("VR: resizing renderer to " + ds.BackBufferWidth + "x" + ds.BackBufferHeight + " per eye");
@@ -223,6 +242,9 @@ namespace SeVr.Vr
                         {
                             Plugin.Log("VR: session failed: " + err);
                             xr.Shutdown();
+                            Active = false;
+                            // give the window its normal size and VSync back (the eye-sized window would stay otherwise)
+                            if (origSettings.HasValue) { try { MyRenderProxy.RenderThread.SwitchSettings(origSettings.Value); } catch (Exception e2) { Plugin.Log("VR: restoring settings failed: " + e2.Message); } }
                             return;
                         }
                         Plugin.Log("VR: OpenXR session created");
@@ -249,6 +271,7 @@ namespace SeVr.Vr
                         Matrix hl = Matrix.CreateFromQuaternion(new Quaternion(hq.x, hq.y, hq.z, hq.w));     // the head, not one eye: displays may be turned outwards
                         hl.Translation = mid;
                         VrHead.CamAge = Math.Max(0f, Math.Min(0.05f, (float)(now - camStamp) / System.Diagnostics.Stopwatch.Frequency));
+                        VrHead.AimOverride = OnlineAimDirection(xr);
                         VrHead.BeginFrame(cw, hl, mid, dt, VrControls.TurnX, VrControls.TurnY);
                     }
                     VrBuild.Update();
@@ -371,10 +394,64 @@ namespace SeVr.Vr
             Context().CopyResource(src, mirrorTex);
         }
 
+        // the desktop window can show what you see in VR: the left eye with the plugin's HUD panels where they are in the world.
+        // Every panel is also kept as a small picture of its own (copied from the scratch image while it is painted).
+        static readonly Texture2D[] mirrorPart = new Texture2D[XrRuntime.PartCount];
+        static readonly ShaderResourceView[] mirrorSrv = new ShaderResourceView[XrRuntime.PartCount];
+        static readonly int[] mirrorFrame = new int[XrRuntime.PartCount];
+        static int mirrorTick;
+
+        static void CopyToMirror(DeviceContext ctx, Texture2DDescription d, SharpDX.Direct3D11.Device dev, int part, int w, int h)
+        {
+            if (part < 0 || part >= mirrorPart.Length) return;
+            var cur = mirrorPart[part];
+            if (cur == null || cur.Description.Width != w || cur.Description.Height != h || cur.Description.Format != d.Format)
+            {
+                if (mirrorSrv[part] != null) mirrorSrv[part].Dispose();
+                if (cur != null) cur.Dispose();
+                var md = d; md.Width = w; md.Height = h; md.MipLevels = 1; md.ArraySize = 1;
+                md.SampleDescription = new SharpDX.DXGI.SampleDescription(1, 0);
+                md.BindFlags = BindFlags.ShaderResource; md.Usage = ResourceUsage.Default; md.CpuAccessFlags = CpuAccessFlags.None; md.OptionFlags = ResourceOptionFlags.None;
+                mirrorPart[part] = new Texture2D(dev, md);
+                mirrorSrv[part] = new ShaderResourceView(dev, mirrorPart[part]);
+            }
+            ctx.CopySubresourceRegion(ownScratch, 0, new ResourceRegion(0, 0, 0, w, h, 1), mirrorPart[part], 0, 0, 0, 0);
+            mirrorFrame[part] = mirrorTick;
+        }
+
+        /// <summary>The panels of the last frames, drawn over the saved left eye in the window. False when the desktop shows the game's flat HUD instead.</summary>
+        static bool DrawMirrorPanels()
+        {
+            if (Plugin.Config.Mirror != "vr" || MenuState.IsMenuOpen()) return false;
+            var xr = XrRuntime.Instance;
+            if (xr == null) return false;
+            mirrorTick++;
+            var quads = new List<VrOverlay.MirrorQuad>();
+            var eye0 = eyeWorldCache[0];
+            for (int part = 0; part < mirrorPart.Length; part++)
+            {
+                if (mirrorSrv[part] == null || mirrorTick - mirrorFrame[part] > 4) continue;
+                N.Pose pp; float pw, ph;
+                if (!xr.TryGetShownPart(part, out pp, out pw, out ph)) continue;
+                MatrixD wm = VrHead.EyeWorld(FromPose(pp), camWorldCache);
+                Vector3D c = wm.Translation, rx = wm.Right * (pw * 0.5), uy = wm.Up * (ph * 0.5);
+                var q = new VrOverlay.MirrorQuad { View = mirrorSrv[part], Dist = (c - eye0.Translation).Length() };
+                q.Corners[0] = c - rx + uy; q.Corners[1] = c + rx + uy; q.Corners[2] = c + rx - uy; q.Corners[3] = c - rx - uy;
+                quads.Add(q);
+            }
+            var bb = backbufferProp.GetValue(null);
+            var rtv = bb.GetType().GetProperty("Rtv").GetValue(bb) as RenderTargetView;
+            var back = Backbuffer();
+            var dd = back.Description;
+            VrOverlay.DrawPanelQuads(back.Device, Context(), rtv, dd.Width, dd.Height, eye0, projCache[0], quads);
+            return true;
+        }
+
         static void RestoreMirror()
         {
             if (mirrorTex == null || spriteStash == null) return;
             Context().CopyResource(mirrorTex, Backbuffer());
+            if (DrawMirrorPanels()) return;           // the desktop shows the VR view: no flat game HUD on top
             var rc = rcProp.GetValue(null);
             var rawFalse = Activator.CreateInstance(executeCommandList.GetParameters()[1].ParameterType, false);
             executeCommandList.Invoke(rc, new object[] { spriteStash, rawFalse });
@@ -386,7 +463,7 @@ namespace SeVr.Vr
             try
             {
                 if (inSecondPass || !Active || !draw) return;
-                if (MenuState.IsMenuOpen()) EnsureLaser();
+                EnsureLaser();
                 RenderHudTexture();
                 OverlayEye(0);
                 if (!CopyEye(0)) return;
@@ -457,6 +534,7 @@ namespace SeVr.Vr
             var cfg = Plugin.Config;
             var ctx = Context();
             float scale = cfg.PanelSize / 0.26f;
+            VrOwnHud.LeftAim = false;
             // 1. the parts the game lays out itself: block info, components, chat, crosshair
             int[] fixedParts = { 0, 1, 5, 6 };
             var rects = new List<int[]>();       // part, x, y, w, h
@@ -465,7 +543,8 @@ namespace SeVr.Vr
             {
                 int x, y, w, h;
                 if (cfg.Anchors[part] == "hud" || !VrHudLayout.TryRect(part, d.Width, d.Height, out x, out y, out w, out h)) continue;
-                if (own && part != 6) { rects.Add(new[] { part, x, y, w, h }); continue; }     // the plugin draws these itself: the game's own are only wiped from the picture
+                if (own && part != 6) { rects.Add(new[] { part, x, y, w, h }); continue; }
+                if (part == 6 && !cfg.Crosshair) { rects.Add(new[] { part, x, y, w, h }); continue; }       // no crosshair: wiped from the picture, not shown     // the plugin draws these itself: the game's own are only wiped from the picture
                 float widthM = part == 6 ? 2f * XrRuntime.HudDepth * VrHud.TanX * w / d.Width : PartWidths[part] * scale;     // the crosshair keeps its size in the picture
                 if (CopyPart(xr, src, d, ctx, part, x, y, w, h, cfg.Anchors[part], widthM)) rects.Add(new[] { part, x, y, w, h });
             }
@@ -476,7 +555,7 @@ namespace SeVr.Vr
                 foreach (int part in new[] { 2, 3 })
                     if (cfg.Anchors[2] != "hud" && VrHudLayout.TryRect(part, d.Width, d.Height, out x, out y, out w, out h)) rects.Add(new[] { part, x, y, w, h });
                 float mpp = cfg.PanelSize / 560f;
-                foreach (int part in new[] { 3, 2, 4, 5, 7, 0, 1 })
+                foreach (int part in new[] { 3, 2, 4, 5, 7, 0, 1, 8, 18, 15, 11, 22, 23 })
                     RenderOwnPart(xr, src, d, ctx, part, part >= 2 ? cfg.Anchors[2] : cfg.Anchors[part], mpp);
             }
             ClearRects(ctx, rtv, rects);
@@ -497,23 +576,163 @@ namespace SeVr.Vr
             }
         }
 
+        /// <summary>The cockpit HUD (22 tool bar, 23 buttons P, Z, L, J): only while sitting in a seat or cockpit, saved per block type.</summary>
+        static void RenderSeatPart(XrRuntime xr, Texture2D src, Texture2DDescription d, DeviceContext ctx, int part, float mpp)
+        {
+            if (VrHead.SeatKey == null)
+            {
+                if (part == 22) { VrOwnHud.HotbarHover = false; VrOwnHud.HoverSlot = -1; VrOwnHud.PointerU = -1f; }
+                else { VrOwnHud.SeatHover = -1; }
+                return;
+            }
+            int w, h;
+            if (!VrOwnHud.Prepare(part, out w, out h)) { if (part == 22) VrOwnHud.HotbarHover = false; return; }
+            w = Math.Min(w, XrRuntime.PanelW); h = Math.Min(h, XrRuntime.PanelH);
+            if (part == 22)
+            {
+                if (!VrOwnHud.EditMode) PointAtToolbar(xr, w, h, 22);
+                else { VrOwnHud.HotbarHover = false; VrOwnHud.HoverSlot = -1; VrOwnHud.PointerU = -1f; }
+            }
+            else PressSeatBar(xr, w, h);
+            if (!PaintPanel(xr, src, d, ctx, part, w, h, () => VrOwnHud.Draw(part, w, h))) return;
+            float widthM = part == 22 ? Math.Min(0.50f, w * mpp * 0.5f) : 0.23f;
+            xr.SetPanel(part, w, h, "seat", widthM, true);
+        }
+
+        static readonly string[] seatPulses = { "seat_p", "seat_z", "seat_l" };
+        static bool prevSeatTrig;
+        static void PressSeatBar(XrRuntime xr, int w, int h)
+        {
+            float u, v; bool leftHand;
+            bool hit = !VrOwnHud.EditMode && AimAt(xr, 23, out u, out v, out leftHand);
+            if (!hit) { VrOwnHud.SeatHover = -1; prevSeatTrig = false; return; }
+            AimAt(xr, 23, out u, out v, out leftHand);
+            xr.SetHudLaser(xr.PartPoint(23, u, v), leftHand);
+            int cell = Math.Max(0, Math.Min(2, (int)(u * 3f)));
+            if (cell != VrOwnHud.SeatHover) xr.Haptic(leftHand, 0.02f, 0.35f);
+            VrOwnHud.SeatHover = cell;
+            bool trig = TrigDown(leftHand);
+            if (trig && !prevSeatTrig) { xr.Haptic(leftHand, 0.06f, 0.8f); VrControls.ExternalPulse(seatPulses[cell]); }
+            prevSeatTrig = trig;
+        }
+
         static Texture2D ownScratch; static RenderTargetView ownScratchRtv;
 
         /// <summary>Draw one of the plugin's own HUD panels (status, tool bar, block info, components) straight into the part's image.</summary>
         static void RenderOwnPart(XrRuntime xr, Texture2D src, Texture2DDescription d, DeviceContext ctx, int part, string anchor, float mpp)
         {
             if (anchor == "hud") return;
+            if (part == 22 || part == 23) { RenderSeatPart(xr, src, d, ctx, part, mpp); return; }
+            if (part == 15)
+            {
+                // the help window (controls and hints), on by default; the ? button switches it
+                int hw, hh;
+                if (!Plugin.Config.Help || !VrOwnHud.Prepare(15, out hw, out hh)) return;
+                if (PaintPanel(xr, src, d, ctx, 15, hw, hh, () => VrOwnHud.Draw(15, hw, hh))) xr.SetPanel(15, hw, hh, "help", 0.75f, true);
+                return;
+            }
+            if (part == 2 && VrHead.SeatKey != null) { VrOwnHud.HotbarHover = false; VrOwnHud.HoverSlot = -1; VrOwnHud.PointerU = -1f; return; }        // seated: the cockpit tool bar (22) replaces it
+            string mode = Plugin.Config.HudMode;
+            bool wrist = mode == "wrist" && (part == 2 || part == 3 || part == 4);
+            bool hand = mode == "hand" && (part == 0 || part == 1 || part == 2 || part == 3 || part == 4 || part == 5 && false || XrRuntime.IsHandButton(part));
+            bool buttonPart = XrRuntime.IsHandButton(part);
+            float gaze = 1f;
+            if (wrist) { anchor = "lhand"; gaze = xr.GazeFactor(true); }       // wrist HUD: on the left hand, only there when you look at it
+            if (hand) anchor = "handmenu";                                      // hand menu: one block on the left hand, opened with the small button
+            if (buttonPart && !hand) return;
+            if (part == 2 && !wrist && !hand) { VrOwnHud.HotbarHover = false; VrOwnHud.HoverSlot = -1; VrOwnHud.PointerU = -1f; }
+            if (hand && !buttonPart && !VrOwnHud.MenuOpen && !VrOwnHud.EditMode) { if (part == 2) { VrOwnHud.HotbarHover = false; VrOwnHud.HoverSlot = -1; VrOwnHud.PointerU = -1f; } return; }
+            if (buttonPart)
+            {
+                // the buttons on the back of the hand are only there while you look at the hand
+                gaze = xr.GazeFactor(part != 18);
+                if (gaze < 0.03f) { if (part == 8) { VrOwnHud.HoverButton = -1; VrOwnHud.ButtonHover = false; } else if (VrOwnHud.HoverButton >= 18 && VrOwnHud.HoverButton <= 20) VrOwnHud.HoverButton = -1; return; }
+            }
+            // A panel is repainted about 14 times a second, or at once when something it shows about the pointing changes; in between the last image is
+            // shown again (the headset runtime keeps the last image of a swapchain), which saves most of the drawing and the game-data reading.
+            long nowT = System.Diagnostics.Stopwatch.GetTimestamp();
+            int key = PaintKey(xr, part, gaze);
+            bool fresh = paintW[part] > 0 && key == paintKey[part] && nowT - paintTick[part] < (long)(RepaintSeconds * System.Diagnostics.Stopwatch.Frequency);
             int w, h;
-            if (!VrOwnHud.Prepare(part, out w, out h)) return;
-            w = Math.Min(w, XrRuntime.PanelW); h = Math.Min(h, XrRuntime.PanelH);
+            if (fresh) { w = paintW[part]; h = paintH[part]; }
+            else
+            {
+                if (!VrOwnHud.Prepare(part, out w, out h)) { paintW[part] = 0; if (part == 2) VrOwnHud.HotbarHover = false; if (part == 11) VrOwnHud.StripHover = -1; return; }
+                w = Math.Min(w, XrRuntime.PanelW); h = Math.Min(h, XrRuntime.PanelH);
+            }
+            if (wrist && gaze < 0.03f) { if (part == 2) { VrOwnHud.HotbarHover = false; VrOwnHud.HoverSlot = -1; VrOwnHud.PointerU = -1f; } return; }
+            if ((wrist || hand) && part == 2 && !VrOwnHud.EditMode) PointAtToolbar(xr, w, h);
+            if (part == 2 && VrOwnHud.EditMode) { VrOwnHud.HotbarHover = false; VrOwnHud.HoverSlot = -1; VrOwnHud.PointerU = -1f; }
+            if (buttonPart) PressCluster(xr, part, w, h);
+            if (part == 11) PressEditStrip(xr);
+            if (fresh)
+            {
+                xr.SetPanel(part, w, h, anchor, paintWidthM[part], true);
+                if (part < mirrorFrame.Length) mirrorFrame[part] = mirrorTick;
+                return;
+            }
+            VrOverlay.OpacityMul = wrist || buttonPart ? gaze : 1f;
+            if (!PaintPanel(xr, src, d, ctx, part, w, h, () => VrOwnHud.Draw(part, w, h))) { VrOverlay.OpacityMul = 1f; return; }
+            VrOverlay.OpacityMul = 1f;
+            float fs = Math.Max(0.5f, Plugin.Config.HudDistance) / 0.72f;       // farther away = proportionally larger, so the apparent size stays
+            float widthM = buttonPart ? (part == 8 ? 0.0964f : 0.045f) : part == 11 ? 0.30f : (wrist || hand) ? Math.Min(0.9f, w * mpp * Plugin.Config.WristScale) : Math.Min(0.9f * fs, w * mpp * fs);
+            xr.SetPanel(part, w, h, anchor, widthM, true);
+            paintTick[part] = nowT; paintKey[part] = key; paintW[part] = w; paintH[part] = h; paintWidthM[part] = widthM;
+        }
+
+        const double RepaintSeconds = 0.07;
+        static readonly long[] paintTick = new long[XrRuntime.PartCount];
+        static readonly int[] paintKey = new int[XrRuntime.PartCount], paintW = new int[XrRuntime.PartCount], paintH = new int[XrRuntime.PartCount];
+        static readonly float[] paintWidthM = new float[XrRuntime.PartCount];
+
+        /// <summary>What a panel shows about the pointing and the modes: when this changes the panel is repainted at once.</summary>
+        static int PaintKey(XrRuntime xr, int part, float gaze)
+        {
+            unchecked
+            {
+                int k = VrOwnHud.HoverSlot * 31 + VrOwnHud.HoverButton * 17 + VrOwnHud.StripHover * 13 + VrOwnHud.ProdMultiplier;
+                k = k * 31 + (VrOwnHud.MenuOpen ? 1 : 0) + (VrOwnHud.EditMode ? 2 : 0) + (int)(gaze * 8f) * 4;
+                k = k * 31 + (int)(VrOwnHud.PointerU * 40f) * 7 + (int)(VrOwnHud.PointerV * 40f);
+                k = k * 31 + (xr.EditHoverPart == part ? 1 : 0) + (part == 11 ? (xr.FocusPart + 1) * 5 + xr.AttachOf(xr.FocusPart < 0 ? 0 : xr.FocusPart) : 0);
+                k = k * 31 + (int)(Plugin.Config.HudOpacity * 20f);
+                return k;
+            }
+        }
+
+        /// <summary>
+        /// Draw a panel with the given painter: into an image of our own first (the headset runtime's images are not necessarily usable as render
+        /// targets), then copied into the part's image. False when the part's image could not be had.
+        /// </summary>
+        static bool PaintPanel(XrRuntime xr, Texture2D src, Texture2DDescription d, DeviceContext ctx, int part, int w, int h, Action paint)
+        {
             Texture2D dst;
             bool real = !xr.Fake;
-            if (real)
+            int dx = 0, dy = 0;
+            bool atlas = real && XrRuntime.AtlasPart(part);
+            if (atlas)
             {
                 string err;
-                if (!xr.EnsurePanelSwapchain(part, (int)d.Format, out err)) { LogOnce("VR: " + err); return; }
+                if (!xr.EnsurePanelSwapchain(part, (int)d.Format, out err)) { LogOnce("VR: " + err); return false; }
+                if (atlasTex == null)
+                {
+                    IntPtr p0 = xr.AtlasFirstImage;
+                    if (p0 == IntPtr.Zero) return false;
+                    Texture2D im;
+                    if (!wrappers.TryGetValue(p0, out im)) { Marshal.AddRef(p0); im = new Texture2D(p0); wrappers[p0] = im; }
+                    var ad = im.Description;
+                    ad.MipLevels = 1; ad.ArraySize = 1; ad.SampleDescription = new SharpDX.DXGI.SampleDescription(1, 0);
+                    ad.Usage = ResourceUsage.Default; ad.BindFlags = BindFlags.ShaderResource; ad.CpuAccessFlags = CpuAccessFlags.None; ad.OptionFlags = ResourceOptionFlags.None;
+                    atlasTex = new Texture2D(src.Device, ad);
+                }
+                dst = atlasTex;
+                XrRuntime.AtlasPos(part, out dx, out dy);
+            }
+            else if (real)
+            {
+                string err;
+                if (!xr.EnsurePanelSwapchain(part, (int)d.Format, out err)) { LogOnce("VR: " + err); return false; }
                 IntPtr p = xr.AcquirePanel(part);
-                if (p == IntPtr.Zero) return;
+                if (p == IntPtr.Zero) return false;
                 if (!wrappers.TryGetValue(p, out dst)) { Marshal.AddRef(p); dst = new Texture2D(p); wrappers[p] = dst; }
             }
             else
@@ -523,7 +742,6 @@ namespace SeVr.Vr
             }
             try
             {
-                // the headset runtime's images are not necessarily usable as render targets: draw into an image of our own, then copy
                 if (ownScratch == null || ownScratch.Description.Format != d.Format)
                 {
                     if (ownScratch != null) { ownScratchRtv.Dispose(); ownScratch.Dispose(); }
@@ -537,17 +755,253 @@ namespace SeVr.Vr
                 bool srgb = d.Format.ToString().Contains("SRgb");
                 if (VrOverlay.Begin2D(src.Device, ctx, ownScratchRtv, w, h, srgb))
                 {
-                    VrOwnHud.Draw(part, w, h);
+                    paint();
                     VrOverlay.End2D();
-                    ctx.CopySubresourceRegion(ownScratch, 0, new ResourceRegion(0, 0, 0, w, h, 1), dst, 0, 0, 0, 0);
+                    ctx.CopySubresourceRegion(ownScratch, 0, new ResourceRegion(0, 0, 0, w, h, 1), dst, 0, dx, dy, 0);
+                    if (Plugin.Config.Mirror == "vr") CopyToMirror(ctx, d, src.Device, part, w, h);
                 }
                 if (clearState == null) clearState = rcProp.PropertyType.GetMethod("ClearState", All);
                 if (clearState != null) clearState.Invoke(rcProp.GetValue(null), null);
             }
             catch (Exception e) { LogOnce("own hud: " + e.Message); }
-            if (real) xr.ReleasePanel(part);
-            float fs = Math.Max(0.5f, Plugin.Config.HudDistance) / 0.72f;       // farther away = proportionally larger, so the apparent size stays
-            xr.SetPanel(part, w, h, anchor, Math.Min(0.9f * fs, w * mpp * fs), true);
+            if (atlas) atlasDirty = true;
+            else if (real) xr.ReleasePanel(part);
+            return true;
+        }
+
+        static Texture2D atlasTex; static bool atlasDirty;
+        /// <summary>Copy the atlas of the small parts into the swapchain image (once per frame, when something was painted).</summary>
+        static void FlushAtlas(XrRuntime xr, DeviceContext ctx)
+        {
+            if (!atlasDirty || atlasTex == null) return;
+            atlasDirty = false;
+            IntPtr p = xr.AcquireAtlas();
+            if (p == IntPtr.Zero) return;
+            Texture2D im;
+            if (!wrappers.TryGetValue(p, out im)) { Marshal.AddRef(p); im = new Texture2D(p); wrappers[p] = im; }
+            ctx.CopyResource(atlasTex, im);
+            xr.ReleaseAtlas();
+        }
+
+        /// <summary>The strip below the part that was pointed at in edit mode: size (grip, handled in the runtime), tie to the left hand, tie to the head, free.</summary>
+        static void PressEditStrip(XrRuntime xr)
+        {
+            float u, v; bool leftHand;
+            bool hit = AimAt(xr, 11, out u, out v, out leftHand);
+            int btn = hit ? Math.Min(3, (int)(u * 4f)) : -1;
+            if (hit && btn != VrOwnHud.StripHover) xr.Haptic(leftHand, 0.02f, 0.35f);
+            VrOwnHud.StripHover = btn;
+            if (hit) xr.SetHudLaser(xr.PartPoint(11, u, v), leftHand);
+            bool trig = TrigDown(leftHand);
+            if (hit && btn >= 1 && trig && !prevBtn[11])
+            {
+                int f = xr.FocusPart;
+                if (f >= 0) xr.SetAttach(f, btn == 1 ? 1 : btn == 2 ? 2 : 0);
+                xr.Haptic(leftHand, 0.06f, 0.8f);
+            }
+            prevBtn[11] = trig;
+        }
+
+        // which hand points at a part: the right one if its ray hits it, else the left one (its trigger is then the click)
+        static bool AimAt(XrRuntime xr, int part, out float u, out float v, out bool left)
+        {
+            left = false;
+            if (xr.PointAt(part, true, out u, out v)) return true;
+            left = true;
+            if (xr.PointAt(part, false, out u, out v)) { VrOwnHud.LeftAim = true; return true; }
+            return false;
+        }
+        static bool AimNear(XrRuntime xr, int part, float radius, out bool left)
+        {
+            left = false;
+            if (xr.PointNear(part, true, radius)) return true;
+            left = true;
+            if (xr.PointNear(part, false, radius)) { VrOwnHud.LeftAim = true; return true; }
+            return false;
+        }
+        static bool TrigDown(bool left) { return (left ? VrControls.TrigLRaw : VrControls.TrigRRaw) > 0.6f; }
+
+        static System.Reflection.FieldInfo termTabs; static int prodPage = -2, lastTermPage = -9; static string lastScreenName = "";
+
+        /// <summary>The terminal (K) with its Production tab showing.</summary>
+        static bool TerminalProductionOpen()
+        {
+            try
+            {
+                var s = Sandbox.Graphics.GUI.MyScreenManager.GetScreenWithFocus();
+                string sn = s != null ? s.GetType().Name : "";
+                if (sn != lastScreenName) { lastScreenName = sn; Plugin.Log("menu: screen with focus " + sn); }
+                if (s == null || sn.IndexOf("Terminal", StringComparison.OrdinalIgnoreCase) < 0 || sn.IndexOf("Screen", StringComparison.OrdinalIgnoreCase) < 0) return false;
+                if (termTabs == null)
+                {
+                    var tt = s.GetType();
+                    termTabs = tt.GetField("m_terminalTabs", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                    var ei = tt.GetField("m_initialPage", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                    try { prodPage = (int)Enum.Parse(ei.FieldType, "Production"); } catch { prodPage = -1; Plugin.Log("menu: terminal page 'Production' not found"); }
+                }
+                var tabs = termTabs != null ? termTabs.GetValue(s) as Sandbox.Graphics.GUI.MyGuiControlTabControl : null;
+                if (tabs != null && tabs.SelectedPage != lastTermPage) { lastTermPage = tabs.SelectedPage; Plugin.Log("menu: terminal page " + lastTermPage + " (production = " + prodPage + ")"); }
+                return tabs != null && prodPage >= 0 && tabs.SelectedPage == prodPage;
+            }
+            catch { return false; }
+        }
+
+        /// <summary>The G menu: the screen with the tool bar configuration (and block selection).</summary>
+        static bool GMenuOpen()
+        {
+            try
+            {
+                var s = Sandbox.Graphics.GUI.MyScreenManager.GetScreenWithFocus();
+                for (var t = s != null ? s.GetType() : null; t != null; t = t.BaseType)
+                    if (t.Name.IndexOf("ToolbarConfig", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+                return false;
+            }
+            catch { return false; }
+        }
+
+        /// <summary>
+        /// In a menu (G, K ...): the strip below the window (size, lock, keyboard, tool bar pages), the free-floating keyboard and, in the terminal,
+        /// the production multiplier (x1, x10, x100, x1000) above it.
+        /// </summary>
+        static void RenderMenuExtras(XrRuntime xr, Texture2D src, Texture2DDescription d, DeviceContext ctx)
+        {
+            try
+            {
+                VrOwnHud.LeftAim = false;
+                VrOwnHud.GMenuOpen = GMenuOpen();
+                // the strip below the window (the page arrows only in the G menu)
+                {
+                    int w, h; VrOwnHud.Prepare(13, out w, out h);
+                    int cells = VrOwnHud.MenuStripCells;
+                    float u, v; bool leftHand; bool hit = AimAt(xr, 13, out u, out v, out leftHand);
+                    int cell = hit ? Math.Min(cells - 1, (int)(u * cells)) : -1;
+                    if (cells == 6 && cell == 4) cell = -1;
+                    if (cell >= 0 && cell != VrOwnHud.MenuStripHover) xr.Haptic(leftHand, 0.02f, 0.35f);
+                    VrOwnHud.MenuStripHover = cell;
+                    if (hit) xr.SetHudLaser(xr.PartPoint(13, u, v), leftHand);
+                    bool trig = TrigDown(leftHand);
+                    if (cell >= 0 && trig && !prevBtn[13])
+                    {
+                        xr.Haptic(leftHand, 0.06f, 0.8f);
+                        if (cell == 1) { Plugin.Config.MenuLocked = !Plugin.Config.MenuLocked; try { Plugin.SaveConfig(); } catch { } }
+                        else if (cell == 2) VrKeyboard.Shown = !VrKeyboard.Shown;
+                        else if (cell == 3 || cell == 5)
+                        {
+                            bool next = cell == 5;
+                            Sandbox.MySandboxGame.Static.Invoke(() =>
+                            {
+                                try { var tb = Sandbox.Game.Screens.Helpers.MyToolbarComponent.CurrentToolbar; if (tb != null) { if (next) tb.PageUp(); else tb.PageDown(); } }
+                                catch (Exception e) { Plugin.Log("menu page: " + e.Message); }
+                            }, "SeVr");
+                        }
+                    }
+                    prevBtn[13] = trig;
+                    if (PaintPanel(xr, src, d, ctx, 13, w, h, () => VrOwnHud.Draw(13, w, h))) xr.SetPanel(13, w, h, "menu", w * 0.000625f, true);
+                }
+                // the production multiplier, in the terminal's Production tab only
+                if (TerminalProductionOpen())
+                {
+                    int w, h; VrOwnHud.Prepare(14, out w, out h);
+                    float u, v; bool leftHand; bool hit = AimAt(xr, 14, out u, out v, out leftHand);
+                    int cell = hit ? Math.Min(3, (int)(u * 4f)) : -1;
+                    if (cell >= 0 && cell != VrOwnHud.ProdHover) xr.Haptic(leftHand, 0.02f, 0.35f);
+                    VrOwnHud.ProdHover = cell;
+                    if (hit) xr.SetHudLaser(xr.PartPoint(14, u, v), leftHand);
+                    bool trig = TrigDown(leftHand);
+                    if (cell >= 0 && trig && !prevBtn[14])
+                    {
+                        xr.Haptic(leftHand, 0.06f, 0.8f);
+                        int val = VrOwnHud.ProdValues[cell];
+                        VrOwnHud.ProdMultiplier = VrOwnHud.ProdMultiplier == val ? 1 : val;       // one at a time; the same again = back to x1
+                    }
+                    prevBtn[14] = trig;
+                    if (PaintPanel(xr, src, d, ctx, 14, w, h, () => VrOwnHud.Draw(14, w, h))) xr.SetPanel(14, w, h, "menu", 0.40f, true);
+                }
+                else { VrOwnHud.ProdMultiplier = 1; VrOwnHud.ProdHover = -1; }
+                // the keyboard
+                if (VrKeyboard.Shown)
+                {
+                    int w = 1408, h = (int)Math.Round(1408.0 * VrKeyboard.BmpH / VrKeyboard.BmpW);
+                    if (PaintPanel(xr, src, d, ctx, 12, w, h, () => VrOverlay.DrawKeyboard(src.Device, ctx, ownScratchRtv, w, h, new System.Drawing.RectangleF(0, 0, 1, 1), VrKeyboard.Hover, VrKeyboard.PressedFlash)))
+                        xr.SetPanel(12, w, h, "menu", 0.62f, true);
+                }
+            }
+            catch (Exception e) { LogOnce("menu extras: " + e.Message); }
+        }
+
+        static bool prevHotbarTrigger;
+
+        /// <summary>
+        /// The small buttons on the back of the left hand (8 menu, 9 edit, 10 reset): point at one with the right hand and pull the trigger.
+        /// The menu button opens and closes the hand menu, the edit button switches edit mode (and keeps the layout when it is switched off),
+        /// the reset button puts all moved parts back.
+        /// </summary>
+        static void PressCluster(XrRuntime xr, int part, int w, int h)
+        {
+            // the left cluster is pressed by the right hand (the left ray runs right past it all the time), the right cluster by the left hand
+            bool leftHand = part == 18;
+            float u, v;
+            int id = -1;
+            if (xr.PointAt(part, !leftHand, out u, out v)) id = VrOwnHud.ClusterCell(part, u * w, v * h);
+            if (id >= 0)
+            {
+                if (leftHand) VrOwnHud.LeftAim = true;
+                xr.SetHudLaser(xr.PartPoint(part, u, v), leftHand);
+                if (VrOwnHud.HoverButton != id) xr.Haptic(leftHand, 0.02f, 0.35f);
+                VrOwnHud.HoverButton = id;
+            }
+            else if (VrOwnHud.HoverButton >= 0 && (VrOwnHud.HoverButton >= 18 && VrOwnHud.HoverButton <= 20) == leftHand) VrOwnHud.HoverButton = -1;
+            VrOwnHud.ButtonHover = VrOwnHud.HoverButton >= 0 && !(VrOwnHud.HoverButton >= 18 && VrOwnHud.HoverButton <= 20);
+            bool trig = TrigDown(leftHand);
+            if (id >= 0 && trig && !prevBtn[part])
+            {
+                xr.Haptic(leftHand, 0.06f, 0.8f);
+                if (id == 8) VrOwnHud.MenuOpen = !VrOwnHud.MenuOpen;
+                else if (id == 9)
+                {
+                    VrOwnHud.EditMode = !VrOwnHud.EditMode;
+                    if (VrOwnHud.EditMode) VrOwnHud.MenuOpen = true;
+                    else { try { Plugin.SaveConfig(); } catch { } }
+                }
+                else if (id == 10) xr.ResetLayout();
+                else if (id == 22) { Plugin.Config.Help = !Plugin.Config.Help; try { Plugin.SaveConfig(); } catch { } }
+                else VrControls.ExternalPulse(id == 15 ? "btn_k" : id == 16 ? "btn_g" : id == 17 ? "btn_i" : id == 21 ? "btn_chat" : id == 18 ? "btn_f10" : id == 19 ? "btn_af10" : "btn_sf10");
+            }
+            prevBtn[part] = trig;
+        }
+        static readonly bool[] prevBtn = new bool[XrRuntime.PartCount];
+
+        /// <summary>The right hand points at the wrist tool bar: highlight the slot under the ray; the trigger picks it (instead of using the tool).</summary>
+        static void PointAtToolbar(XrRuntime xr, int w, int h, int part = 2)
+        {
+            float u, v; bool leftHand;
+            bool hit = AimAt(xr, part, out u, out v, out leftHand);
+            if (hit) xr.SetHudLaser(xr.PartPoint(part, u, v), leftHand);
+            int slot = hit ? VrOwnHud.SlotAt(u * w, v * h, w, VrOwnHud.SlotCount) : -1;
+            if (slot >= 0 && slot != VrOwnHud.HoverSlot) xr.Haptic(leftHand, 0.02f, 0.35f);
+            VrOwnHud.HoverSlot = slot;
+            VrOwnHud.PointerU = hit ? u : -1f; VrOwnHud.PointerV = hit ? v : -1f;
+            VrOwnHud.HotbarHover = hit;
+            bool trig = TrigDown(leftHand);
+            if (hit && slot >= 0 && trig && !prevHotbarTrigger)
+            {
+                int s = slot;
+                xr.Haptic(leftHand, 0.05f, 0.8f);
+                Sandbox.MySandboxGame.Static.Invoke(() =>
+                {
+                    try
+                    {
+                        var tb = Sandbox.Game.Screens.Helpers.MyToolbarComponent.CurrentToolbar;
+                        if (tb == null) return;
+                        if (s == VrOwnHud.PagePrevCode) tb.PageDown();               // previous tool bar page
+                        else if (s == VrOwnHud.PageNextCode) tb.PageUp();            // next tool bar page
+                        else if (s == VrOwnHud.SlotCount) tb.Unselect(true);         // the empty-hand slot (key 0)
+                        else tb.ActivateItemAtSlot(s, false, true, true);
+                    }
+                    catch (Exception e) { Plugin.Log("hotbar pick: " + e.Message); }
+                }, "SeVr");
+            }
+            prevHotbarTrigger = trig;
         }
 
         static bool CopyPart(XrRuntime xr, Texture2D src, Texture2DDescription d, DeviceContext ctx, int part, int x, int y, int w, int h, string anchor, float widthM)
@@ -695,9 +1149,11 @@ namespace SeVr.Vr
             var rawFalse = Activator.CreateInstance(executeCommandList.GetParameters()[1].ParameterType, false);
             executeCommandList.Invoke(rc, new object[] { spriteStash, rawFalse });
             VrKeyboard.DrawOnScreen(src.Device, ctx, rtv, d.Width, d.Height);     // on-screen keyboard on top of the menu
+            if (MenuState.IsMenuOpen()) { RenderMenuExtras(xr, src, d, ctx); FlushAtlas(xr, ctx); }
+            else { VrOwnHud.ProdMultiplier = 1; VrOwnHud.MenuStripHover = -1; VrOwnHud.ProdHover = -1; }      // closing the window ends the production multiplier
             if (!MenuState.IsMenuOpen())
             {
-                ClearMarkerRects(Context(), rtv, d); ExtractParts(xr, src, rtv, d);
+                ClearMarkerRects(Context(), rtv, d); ExtractParts(xr, src, rtv, d); FlushAtlas(xr, ctx);
                 // own HUD: what was found became panels, what is left is faint remains of the game's HUD (mod glows, shadows): wipe the flat picture
                 if (Plugin.Config.OwnHud && Plugin.Config.Anchors[2] != "hud") Context().ClearRenderTargetView(rtv, new SharpDX.Mathematics.Interop.RawColor4(0f, 0f, 0f, 0f));
             }
@@ -820,9 +1276,9 @@ namespace SeVr.Vr
         {
             if (captured || !ranSecondPass || ++capFrames < capTarget) return;
             captured = true;
-            SaveTex(fakeComposite, "SeVr_capture.png", false);
-            if (hudFake != null) SaveTex(hudFake, "SeVr_hud.png", true);
-            for (int pi = 0; pi < partFake.Length; pi++) if (partFake[pi] != null) SaveTex(partFake[pi], "SeVr_part" + pi + ".png", true);
+            SaveTex(fakeComposite, Plugin.Tag + "_capture.png", false);
+            if (hudFake != null) SaveTex(hudFake, Plugin.Tag + "_hud.png", true);
+            for (int pi = 0; pi < partFake.Length; pi++) if (partFake[pi] != null) SaveTex(partFake[pi], Plugin.Tag + "_part" + pi + ".png", true);
         }
 
         static void SaveTex(Texture2D res, string fileName, bool alpha)
@@ -846,7 +1302,7 @@ namespace SeVr.Vr
                         Marshal.Copy(row, 0, bd.Scan0 + y * bd.Stride, row.Length);
                     }
                     bmp.UnlockBits(bd);
-                    var path = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "SpaceEngineers", fileName);
+                    var path = System.IO.Path.Combine(Plugin.DataDir(), fileName);
                     bmp.Save(path, System.Drawing.Imaging.ImageFormat.Png);
                     Plugin.Log("VR: debug capture saved " + path + " (" + d.Format + " " + d.Width + "x" + d.Height + ")");
                 }
