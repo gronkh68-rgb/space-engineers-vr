@@ -555,7 +555,7 @@ namespace SeVr.Vr
                 foreach (int part in new[] { 2, 3 })
                     if (cfg.Anchors[2] != "hud" && VrHudLayout.TryRect(part, d.Width, d.Height, out x, out y, out w, out h)) rects.Add(new[] { part, x, y, w, h });
                 float mpp = cfg.PanelSize / 560f;
-                foreach (int part in new[] { 3, 2, 4, 5, 7, 0, 1, 8, 18, 15, 11, 22, 23 })
+                foreach (int part in new[] { 3, 2, 4, 5, 7, 0, 1, 16, 18, 15, 11, 22, 23 })
                     RenderOwnPart(xr, src, d, ctx, part, part >= 2 ? cfg.Anchors[2] : cfg.Anchors[part], mpp);
             }
             ClearRects(ctx, rtv, rects);
@@ -646,7 +646,7 @@ namespace SeVr.Vr
             {
                 // the buttons on the back of the hand are only there while you look at the hand
                 gaze = xr.GazeFactor(part != 18);
-                if (gaze < 0.03f) { if (part == 8) { VrOwnHud.HoverButton = -1; VrOwnHud.ButtonHover = false; } else if (VrOwnHud.HoverButton >= 18 && VrOwnHud.HoverButton <= 20) VrOwnHud.HoverButton = -1; return; }
+                if (gaze < 0.03f) { if (part == 16) { VrOwnHud.HoverButton = -1; VrOwnHud.ButtonHover = false; } else if (VrOwnHud.HoverButton >= 18 && VrOwnHud.HoverButton <= 20) VrOwnHud.HoverButton = -1; return; }
             }
             // A panel is repainted about 14 times a second, or at once when something it shows about the pointing changes; in between the last image is
             // shown again (the headset runtime keeps the last image of a swapchain), which saves most of the drawing and the game-data reading.
@@ -675,7 +675,7 @@ namespace SeVr.Vr
             if (!PaintPanel(xr, src, d, ctx, part, w, h, () => VrOwnHud.Draw(part, w, h))) { VrOverlay.OpacityMul = 1f; return; }
             VrOverlay.OpacityMul = 1f;
             float fs = Math.Max(0.5f, Plugin.Config.HudDistance) / 0.72f;       // farther away = proportionally larger, so the apparent size stays
-            float widthM = buttonPart ? (part == 8 ? 0.0964f : 0.045f) : part == 11 ? 0.30f : (wrist || hand) ? Math.Min(0.9f, w * mpp * Plugin.Config.WristScale) : Math.Min(0.9f * fs, w * mpp * fs);
+            float widthM = buttonPart ? (part == 16 ? 0.0964f : 0.045f) : part == 11 ? 0.30f : (wrist || hand) ? Math.Min(0.9f, w * mpp * Plugin.Config.WristScale) : Math.Min(0.9f * fs, w * mpp * fs);
             xr.SetPanel(part, w, h, anchor, widthM, true);
             paintTick[part] = nowT; paintKey[part] = key; paintW[part] = w; paintH[part] = h; paintWidthM[part] = widthM;
         }

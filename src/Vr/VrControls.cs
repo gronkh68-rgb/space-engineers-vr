@@ -78,7 +78,7 @@ namespace SeVr.Vr
                 string bound;
                 if (!row0.GameControl.StartsWith("KEY:") && Plugin.Config.Binds.TryGetValue(row0.Source, out bound))
                 {
-                    if (string.Equals(bound, "none", StringComparison.OrdinalIgnoreCase)) { S(row0.Source); continue; }
+                    if (string.Equals(bound, "none", StringComparison.OrdinalIgnoreCase)) { lock (gate) S(row0.Source); continue; }
                     row = new ControlRow(row0.Id, row0.Source, bound, row0.Mode, row0.Context);
                 }
                 if (row.GameControl.StartsWith("KEY:"))
@@ -89,7 +89,7 @@ namespace SeVr.Vr
                     List<ControlRow> kl;
                     if (!byKey.TryGetValue(key, out kl)) { kl = new List<ControlRow>(); byKey[key] = kl; }
                     kl.Add(row);
-                    S(row.Source);
+                    lock (gate) S(row.Source);
                     continue;
                 }
                 var f = t.GetField(row.GameControl, BindingFlags.Public | BindingFlags.Static);
@@ -98,7 +98,7 @@ namespace SeVr.Vr
                 List<ControlRow> list;
                 if (!byControl.TryGetValue(id, out list)) { list = new List<ControlRow>(); byControl[id] = list; }
                 list.Add(row);
-                S(row.Source);
+                lock (gate) S(row.Source);
             }
             VrControls.byControl = byControl; VrControls.byKey = byKey;
             built = true;

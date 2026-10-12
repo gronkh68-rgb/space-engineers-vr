@@ -123,6 +123,7 @@ namespace SeVr.Xr
 
         [DllImport(L, CallingConvention = CallingConvention.Cdecl)] public static extern int xrCreateInstance(ref InstanceCreateInfo info, out ulong instance);
         [DllImport(L, CallingConvention = CallingConvention.Cdecl)] public static extern int xrDestroyInstance(ulong instance);
+        [DllImport(L, CallingConvention = CallingConvention.Cdecl)] public static extern unsafe int xrGetSystemProperties(ulong instance, ulong systemId, void* properties);
         [DllImport(L, CallingConvention = CallingConvention.Cdecl)] public static extern int xrGetSystem(ulong instance, ref SystemGetInfo info, out ulong systemId);
         [DllImport(L, CallingConvention = CallingConvention.Cdecl)] public static extern int xrGetInstanceProcAddr(ulong instance, [MarshalAs(UnmanagedType.LPStr)] string name, out IntPtr fn);
         [DllImport(L, CallingConvention = CallingConvention.Cdecl)] public static extern int xrCreateSession(ulong instance, ref SessionCreateInfo info, out ulong session);

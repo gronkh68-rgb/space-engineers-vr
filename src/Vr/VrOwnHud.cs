@@ -66,7 +66,7 @@ namespace SeVr.Vr
                         if (rows.Count == 0) return false;
                         w = 440; h = 24 + rows.Count * 46;
                         return true;
-                    case 8:
+                    case 16:
                         if (Plugin.Config.HudMode != "hand") return false;
                         w = 240; h = 472;
                         return true;
@@ -563,7 +563,7 @@ namespace SeVr.Vr
         {
             try
             {
-                if (part == 8) { DrawLeftCluster(); return; }
+                if (part == 16) { DrawLeftCluster(); return; }
                 if (part == 18) { DrawRightCluster(); return; }
                 if (part == 11) { DrawEditStrip(w, h); return; }
                 if (part == 13) { DrawMenuStrip(w, h); return; }

@@ -1,5 +1,13 @@
 ﻿# Changelog
 
+## 0.5.1 (early access)
+
+Fixed
+- The button cluster on the left hand has its own part id; with `OwnHud=false` a cut-out HUD piece no longer lands in the shared atlas.
+- `VrControls.Build()` creates its input sources under the lock on both threads.
+- The number of layers per frame is limited to what the runtime reports (`maxLayerCount`); extra parts are left out instead of failing the frame.
+- Removed the unused `LoadAssets(string)`.
+
 ## 0.5.0 (early access)
 
 New

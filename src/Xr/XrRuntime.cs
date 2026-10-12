@@ -132,6 +132,7 @@ namespace SeVr.Xr
             var sys = new N.SystemGetInfo { type = N.T.SystemGetInfo, formFactor = 1 };
             r = N.xrGetSystem(instance, ref sys, out systemId);
             if (r != N.XR_SUCCESS) { error = "xrGetSystem failed (" + r + "). Is the headset connected / streaming?"; return false; }
+            QueryMaxLayers();
 
             N.ViewConfigurationView* v = stackalloc N.ViewConfigurationView[2];
             v[0].type = N.T.ViewConfigurationView; v[1].type = N.T.ViewConfigurationView;
@@ -480,7 +481,7 @@ namespace SeVr.Xr
         public static void AtlasPos(int part, out int x, out int y)
         {
             x = 0; y = 0;
-            if (part == 8) { x = 1280; y = 0; }
+            if (part == 16) { x = 1280; y = 0; }
             else if (part == 18) { x = 1280; y = 480; }
             else if (part == 23) { x = 0; y = 0; }
             else if (part == 11) { x = 576; y = 0; }
@@ -564,6 +565,33 @@ namespace SeVr.Xr
         }
 
         /// <summary>True when the hand's aim ray passes within radius metres of the centre of a part (for small buttons).</summary>
+        // how many composition layers the runtime accepts in one frame (the OpenXR minimum is 16); extra parts are left out instead of failing the frame
+        int maxLayers = 16; bool layerLimitLogged;
+        void QueryMaxLayers()
+        {
+            try
+            {
+                byte* buf = stackalloc byte[512];
+                for (int i = 0; i < 512; i++) buf[i] = 0;
+                *(int*)buf = (int)N.T.SystemProperties;
+                *(ulong*)(buf + 16) = systemId;
+                if (N.xrGetSystemProperties(instance, systemId, buf) == N.XR_SUCCESS)
+                {
+                    // XrSystemProperties: type, next, systemId, vendorId, systemName[256], graphicsProperties { maxSwapchainImageHeight, maxSwapchainImageWidth, maxLayerCount }
+                    uint m = *(uint*)(buf + 4 + 4 + 8 + 8 + 4 + 256 + 8);
+                    if (m >= 8 && m < 256) maxLayers = (int)m;
+                    Plugin.Log("XR: runtime accepts " + m + " layers per frame");
+                }
+            }
+            catch (Exception e) { Plugin.Log("XR: layer limit query failed: " + e.Message); }
+        }
+        uint LimitLayers(uint n)
+        {
+            if (n <= (uint)maxLayers) return n;
+            if (!layerLimitLogged) { layerLimitLogged = true; Plugin.Log("XR: " + n + " layers, the runtime takes " + maxLayers + ": the last ones are left out"); }
+            return (uint)maxLayers;
+        }
+
         public bool PointNear(int part, bool rightHand, float radius)
         {
             if (!partPoseOk[part] || !(rightHand ? HandRValid : HandLValid)) return false;
@@ -643,8 +671,8 @@ namespace SeVr.Xr
 
         // the crosshair, the buttons on the hand and the strips are not moved by the player
         static bool Movable(int part) { return part != 6 && part != 8 && part != 9 && part != 10 && part != 11 && part != 13 && part != 14 && !IsHandButton(part); }
-        /// <summary>The button clusters on the back of the hands, one layer each: 8 on the left (menu, edit, reset, chat, K, G, I), 18 on the right (F10, Alt+F10, Shift+F10).</summary>
-        public static bool IsHandButton(int part) { return part == 8 || part == 18; }
+        /// <summary>The button clusters on the back of the hands, one layer each: 16 on the left (menu, edit, reset, chat, K, G, I, ?), 18 on the right (F10, Alt+F10, Shift+F10).</summary>
+        public static bool IsHandButton(int part) { return part == 16 || part == 18; }
         // the keys are looked up several times per part and frame: built once per HUD mode
         static string[] layoutKeys; static string layoutKeysMode, layoutKeysSeat;
         static string LayoutKey(int part)
@@ -1237,7 +1265,7 @@ namespace SeVr.Xr
                     }
                 }
                 for (int part = 0; part < PartCount; part++) panels[part].Ready = false;
-                fe.layerCount = n; fe.layers = layers;
+                fe.layerCount = LimitLayers(n); fe.layers = layers;
                 LogEnd(N.xrEndFrame(session, ref fe));
             }
             else
@@ -1279,7 +1307,7 @@ namespace SeVr.Xr
                         layers[n++] = &laserQuad;
                     }
                 }
-                fe.layerCount = n; fe.layers = layers;
+                fe.layerCount = LimitLayers(n); fe.layers = layers;
                 LogEnd(N.xrEndFrame(session, ref fe));
             }
         }

@@ -178,14 +178,6 @@ namespace SeVr
         static string assetDir;
         static bool xrStarted, hooksReady;
 
-        /// <summary>Called by Pulsar with the folder of the plugin's asset files (openxr_loader.dll) when it is installed from the plugin list.</summary>
-        public void LoadAssets(string assetFolder)
-        {
-            assetDir = assetFolder;
-            Log("assets folder: " + assetFolder);
-            if (hooksReady) StartXr();
-        }
-
         static string FindLoader()
         {
             var cands = new System.Collections.Generic.List<string>();
