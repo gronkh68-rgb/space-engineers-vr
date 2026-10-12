@@ -7,7 +7,26 @@
   <Tooltip>Play Space Engineers in VR with OpenXR (SteamVR, Meta, Virtual Desktop, WMR). Early access.</Tooltip>
   <Description>Play Space Engineers in virtual reality through OpenXR. Early access, tested with a Steam Frame over SteamVR and a Quest 2.
 
-Head-tracked stereo view, head steers like the mouse, the character's hands follow the controllers, tools and weapons aim where the controller points, building with the hand (freeze and rotate blocks with the wrist), a hand menu on the left hand with buttons on the back of both hands, floating menus with a laser pointer, world-space GPS markers, an own VR HUD drawn from the game's data, body zones for controllers without a D-pad (Quest), in-game settings and key bindings, and a cockpit HUD with a layout per cockpit type.
+Features
+- Head-tracked stereo view; the head steers like the mouse, the left stick moves relative to your gaze, the right stick turns (eased) and pitches with the jetpack.
+- The character's hands follow the controllers; tools and weapons sit in the right hand and aim where it points. Things to use or select are found with the right hand, no crosshair.
+- Building with the hand: left grip freezes the block, the wrist rotates it, X / B change the variant, Y opens the colour menu, the right stick moves the block.
+- Own VR HUD drawn from the game's data (independent of HUD mods): status, tool bar with the game's icons, block info with functional / hacked marks, components, indicators, ammunition, notifications, chat. Shown as a hand menu on the left hand (button on the back of the hand) or in rows in front of you. Mod HUDs like BuildInfo can be hidden, floated or left alone.
+- Edit mode: pick up any HUD part with the right grip, move it, scale it with the right stick, tie it to a hand or the head. The layout is saved.
+- Buttons on the back of the hands, pointed at with the other hand's laser: left Menu, Edit, Reset, Chat, K (terminal), G (G menu), I (inventory), ? (help); right F10, Alt+F10, Shift+F10.
+- Cockpit HUD: tool bar and a bar with P (landing gear), Z (dampeners), L (lights) fixed in the cockpit; every cockpit type keeps its own layout.
+- Help window with controls and hints, on by default.
+- Tablet-style menu windows with lasers on both hands, on-screen keyboard, page buttons for the G menu, production multiplier x1 / x10 / x100 / x1000.
+- World-space GPS markers; the monitor shows the VR view.
+- Body zones for controllers without a D-pad, each switchable; in-game settings, key bindings and HUD layout screens.
+
+Controls (Touch: Quest, Rift)
+- Left stick move, click sprint. Right stick turn, up / down pitch with the jetpack, click jetpack.
+- A jump, B crouch, X use, Y dampeners, Menu button: game menu. Triggers: tool / second action. Grips in a ship: roll.
+- Left grip held with a block: right stick moves the block, wrist rotates, X / B / Y variant / next variant / colour menu.
+- Right grip held: A / B / X / Y = build planner (MMB / Shift / Ctrl / Alt + MMB), right stick up = F.
+- Body zones (hand there, then trigger or grip): right of the head flashlight / helmet, A = V, B = Escape; left of the head signals / broadcasting; left shoulder build menu (G) / HUD on-off; right shoulder landing gear (grip); chest inventory (trigger); hips next / previous hotbar slot (grip).
+Steam Frame: native controller profile; stick, A / B, X = G, Y = inventory, LB / RB hotbar, D-pad F / Z / L / J, view = game menu.
 
 Single-player view only, no multiplayer features of its own. Put the headset on first and make your headset's OpenXR runtime the active one (SteamVR: Settings, OpenXR, Set SteamVR as OpenXR runtime). Without a headset the game starts normally.
 
